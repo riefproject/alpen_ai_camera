@@ -1,11 +1,58 @@
+import 'dart:async';
 import 'dart:math' as math;
 import 'package:alpen_ai_camera/data/services_impl/camera_service_impl.dart';
 import 'package:alpen_ai_camera/presentation/controllers/camera_controller.dart'
     as app_camera;
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+import 'package:alpen_ai_camera/data/services_impl/camera_service_impl.dart';
+import 'package:alpen_ai_camera/presentation/controllers/camera_controller.dart'
+    as app_camera;
 import 'package:camera/camera.dart' as camera;
+import 'package:flutter/foundation.dart' as camera;
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
+import 'package:path_provider/path_provider.dart';
 import '../widgets/filter_applier.dart';
+import 'gallery_screen.dart';
+
+// GPU-accelerated filter using dart:ui ColorFilter (much faster than pixel-by-pixel)
+Future<Uint8List?> _applyFilterWithGpu(Uint8List imageBytes, List<double> matrix) async {
+  final codec = await ui.instantiateImageCodec(imageBytes);
+  final frame = await codec.getNextFrame();
+  final srcImage = frame.image;
+  final width = srcImage.width;
+  final height = srcImage.height;
+
+  final recorder = ui.PictureRecorder();
+  final canvas = ui.Canvas(recorder);
+  final paint = ui.Paint()
+    ..colorFilter = ui.ColorFilter.matrix(matrix);
+  canvas.drawImage(srcImage, ui.Offset.zero, paint);
+  srcImage.dispose();
+
+  final picture = recorder.endRecording();
+  final dstImage = await picture.toImage(width, height);
+  picture.dispose();
+
+  final byteData = await dstImage.toByteData(format: ui.ImageByteFormat.rawRgba);
+  dstImage.dispose();
+  if (byteData == null) return null;
+
+  // Re-encode RGBA bytes back to a PNG via dart:ui
+  final completer = Completer<ui.Image>();
+  ui.decodeImageFromPixels(
+    byteData.buffer.asUint8List(),
+    width,
+    height,
+    ui.PixelFormat.rgba8888,
+    completer.complete,
+  );
+  final finalImg = await completer.future;
+  final pngData = await finalImg.toByteData(format: ui.ImageByteFormat.png);
+  finalImg.dispose();
+  return pngData?.buffer.asUint8List();
+}
 
 // Widget Jangka Sorong (Ruler) sederhana untuk Zoom
 class ZoomRuler extends StatefulWidget {
@@ -141,9 +188,22 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
   bool _showTopSettings = false; // Panel atas
   String _selectedFilter = 'Asli';
   String _selectedMode = 'FOTO';
+  
+  double _currentZoom = 1.0;
+  double _minAppZoom = 0.5;
+  double _maxAppZoom = 10.0;
+  double _minHardwareZoom = 1.0;
+  double _maxHardwareZoom = 10.0;
 
   final List<String> _filters = ['Asli', 'Alami', 'Manis', 'Keriangan', 'Kristal'];
-  final List<String> _cameraModes = ['MALAM', 'VIDEO', 'FOTO', 'POTRET', '64M'];
+
+  camera.CameraController? get _previewController =>
+      _cameraController.previewController;
+
+  String? _latestPhotoPath;
+  bool _isFlashing = false;
+  bool _isGalleryBlinking = false;
+  bool _isCapturingHardware = false;
 
   camera.CameraController? get _previewController =>
       _cameraController.previewController;
@@ -151,51 +211,90 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
   @override
   void initState() {
     super.initState();
-    _cameraController = app_camera.CameraController(
-      cameraService: CameraServiceImpl(),
-    );
-    _cameraController.initialize();
+    _initCamera();
   }
 
-  Future<void> _toggleCamera() async {
-    await _cameraController.switchCamera();
-    if (!mounted) {
-      return;
+  Future<void> _initCamera() async {
+    try {
+      _cameras = await availableCameras();
+      if (_cameras.isNotEmpty) {
+        _setCamera(_cameras.first);
+      }
+    } catch (e) {
+      debugPrint('Error initializing camera: $e');
     }
+  }
 
-    setState(() {
-      _focusIndicatorPosition = null;
-    });
+  Future<void> _setCamera(CameraDescription camera) async {
+    _controller?.dispose();
+    _controller = CameraController(
+      camera,
+      ResolutionPreset.max,
+      enableAudio: false,
+    );
+
+    try {
+      await _controller!.initialize();
+      _minHardwareZoom = await _controller!.getMinZoomLevel();
+      _maxHardwareZoom = await _controller!.getMaxZoomLevel();
+      
+      // Walau UI bisa diset 0.5 sd 10.0, pas nge-hit hardware akan dilimit aman
+      _minAppZoom = 0.5;
+      _maxAppZoom = 10.0;
+      
+      await _controller!.setFlashMode(_flashMode);
+      if (mounted) {
+        setState(() => _isReady = true);
+      }
+    } catch (e) {
+      debugPrint('Camera initialization error: $e');
+    }
+  }
+
+  void _toggleCamera() {
+    if (_cameras.length > 1) {
+      final currentLensDir = _controller!.description.lensDirection;
+      final newCamera = _cameras.firstWhere(
+        (cam) => cam.lensDirection != currentLensDir,
+        orElse: () => _cameras.first,
+      );
+      setState(() => _isReady = false);
+      _setCamera(newCamera);
+    }
   }
   
   Future<void> _capturePhoto() async {
+    if (_controller == null || !_isReady || _isCapturing) return;
+    
+    setState(() => _isCapturing = true);
+    
     try {
-      final photo = await _cameraController.capturePhoto(
-        delay: _timer > 0 ? Duration(seconds: _timer) : null,
-      );
-      if (photo == null) {
-        return;
+      if (_timer > 0) {
+        await Future.delayed(Duration(seconds: _timer));
       }
-
+      
+      final XFile photo = await _controller!.takePicture();
+      
       // Save to gallery using gal
       await Gal.putImage(photo.path);
       
       if (mounted) {
-         ScaffoldMessenger.of(context).showSnackBar(
-           const SnackBar(content: Text('Tersimpan di Galeri!'), duration: Duration(seconds: 2))
-         );
+        setState(() {
+          _latestPhotoPath = savedImage.path;
+          _isGalleryBlinking = true;
+        });
+        Future.delayed(const Duration(milliseconds: 200), () {
+          if (mounted) setState(() => _isGalleryBlinking = false);
+        });
       }
-      
     } catch (e) {
       debugPrint('Gagal memproses foto: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isCapturing = false);
+      }
     }
   }
-
-  Future<void> _setFlashMode(camera.FlashMode mode) async {
-    await _cameraController.setFlashMode(mode);
-    if (!mounted) {
-      return;
-    }
 
     setState(() {
       _activeTopMenu = 'none';
@@ -801,39 +900,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                     ),
                   ],
                 )
-              : ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _cameraModes.length,
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  itemBuilder: (context, index) {
-                    final mode = _cameraModes[index];
-                    final isSelected = _selectedMode == mode;
-                    return GestureDetector(
-                      onTap: () => setState(() => _selectedMode = mode),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        alignment: Alignment.center,
-                        child: Container(
-                          padding: isSelected ? const EdgeInsets.symmetric(horizontal: 14, vertical: 4) : null,
-                          decoration: isSelected
-                              ? BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(20),
-                                )
-                              : null,
-                          child: Text(
-                            mode,
-                            style: TextStyle(
-                              color: isSelected ? Colors.black : Colors.white,
-                              fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
+              : const SizedBox.shrink(),
         ),
         
         const SizedBox(height: 20),
@@ -845,15 +912,42 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               // Tombol Galeri
-              Container(
-                width: 50,
-                height: 50,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: Colors.grey[900],
-                  border: Border.all(color: Colors.white30, width: 1),
+              GestureDetector(
+                onTap: () {
+                  Navigator.push(
+                    context,
+                    PageRouteBuilder(
+                      pageBuilder: (context, animation, secondaryAnimation) => const GalleryScreen(),
+                      transitionsBuilder: (context, animation, secondaryAnimation, child) {
+                        return FadeTransition(opacity: animation, child: child);
+                      },
+                    ),
+                  );
+                },
+                child: AnimatedOpacity(
+                  opacity: _isGalleryBlinking ? 0.2 : 1.0,
+                  duration: const Duration(milliseconds: 100),
+                  child: Container(
+                    width: 50,
+                    height: 50,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.grey[900],
+                      border: Border.all(color: Colors.white30, width: 1),
+                    ),
+                    child: ClipOval(
+                      child: _latestPhotoPath != null
+                          ? Image.file(
+                              File(_latestPhotoPath!),
+                              fit: BoxFit.cover,
+                              width: 50,
+                              height: 50,
+                              gaplessPlayback: true,
+                            )
+                          : const Icon(Icons.photo, color: Colors.white, size: 24),
+                    ),
+                  ),
                 ),
-                child: const Icon(Icons.photo, color: Colors.white, size: 24),
               ),
               
               // Tombol Shutter
@@ -938,73 +1032,28 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
           child: camera.CameraPreview(previewController),
         );
 
-        return Scaffold(
-          backgroundColor: Colors.black,
-          body: SafeArea(
-            child: _aspectRatio == 'Full'
-                ? Stack(
-                    children: [
-                      // Full Screen Camera Feed
-                      SizedBox.expand(
-                        child: _buildInteractivePreview(
-                          child: FittedBox(
-                            fit: BoxFit.cover,
-                            child: SizedBox(
-                              width: previewController.value.previewSize?.height ?? 1,
-                              height: previewController.value.previewSize?.width ?? 1,
-                              child: cameraContent,
-                            ),
-                          ),
-                        ),
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: _aspectRatio == 'Full'
+            ? Stack(
+                children: [
+                  // Full Screen Camera Feed
+                  SizedBox.expand(
+                    child: FittedBox(
+                      fit: BoxFit.cover,
+                      child: SizedBox(
+                        width: _controller!.value.previewSize?.height ?? 1,
+                        height: _controller!.value.previewSize?.width ?? 1,
+                        child: cameraContent,
                       ),
-                      // Overlays on top of Full Screen Feed
-                      Column(
-                        children: [
-                          Container(
-                            color: Colors.black.withValues(alpha: 0.3),
-                            height: 60,
-                            padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                            child: _buildTopBarMenu(),
-                          ),
-                          Expanded(
-                            child: GestureDetector(
-                              onTap: () {
-                                if (_showFilters) setState(() => _showFilters = false);
-                                if (_activeTopMenu != 'none') setState(() => _activeTopMenu = 'none');
-                                if (_showTopSettings) setState(() => _showTopSettings = false);
-                              },
-                              child: Stack(
-                                children: [
-                                  Positioned.fill(child: _buildGridLines()),
-                                  Positioned.fill(child: _buildGridLinesVertical()),
-                                  Positioned(
-                                    bottom: 20,
-                                    left: 0,
-                                    right: 0,
-                                    child: _showFilters ? _buildFilterCarousel() : _buildZoomAndWandOverlay(),
-                                  ),
-                                  if (_showTopSettings)
-                                    Positioned(
-                                      top: 0, left: 0, right: 0,
-                                      child: _buildTopSettingsPanel(),
-                                    ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          Container(
-                            color: Colors.black.withValues(alpha: 0.3),
-                            padding: const EdgeInsets.only(bottom: 30, top: 15),
-                            child: _buildBottomUI(),
-                          ),
-                        ],
-                      ),
-                    ],
-                  )
-                : Column(
+                    ),
+                  ),
+                  // Overlays on top of Full Screen Feed
+                  Column(
                     children: [
                       Container(
-                        color: Colors.black,
+                        color: Colors.black.withOpacity(0.3),
                         height: 60,
                         padding: const EdgeInsets.symmetric(horizontal: 20.0),
                         child: _buildTopBarMenu(),
@@ -1017,46 +1066,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                             if (_showTopSettings) setState(() => _showTopSettings = false);
                           },
                           child: Stack(
-                            alignment: Alignment.center,
                             children: [
-                              Container(
-                                color: Colors.black,
-                                width: double.infinity,
-                                height: double.infinity,
-                                child: Center(
-                                  // Mengisi Full Width untuk 16:9
-                                  child: _aspectRatio == '16:9'
-                                      ? SizedBox(
-                                          width: double.infinity,
-                                          height: MediaQuery.of(context).size.width * 16 / 9,
-                                          child: _buildInteractivePreview(
-                                            child: FittedBox(
-                                              fit: BoxFit.cover,
-                                              child: SizedBox(
-                                                width: previewController.value.previewSize?.height ?? 1,
-                                                height: previewController.value.previewSize?.width ?? 1,
-                                                child: cameraContent,
-                                              ),
-                                            ),
-                                          ),
-                                        )
-                                      : AspectRatio(
-                                          aspectRatio: _getAspectRatio(),
-                                          child: _buildInteractivePreview(
-                                            child: ClipRect(
-                                              child: FittedBox(
-                                                fit: BoxFit.cover,
-                                                child: SizedBox(
-                                                  width: previewController.value.previewSize?.height ?? 1,
-                                                  height: previewController.value.previewSize?.width ?? 1,
-                                                  child: cameraContent,
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                ),
-                              ),
                               Positioned.fill(child: _buildGridLines()),
                               Positioned.fill(child: _buildGridLinesVertical()),
                               Positioned(
@@ -1075,108 +1085,91 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                         ),
                       ),
                       Container(
-                        color: Colors.black,
+                        color: Colors.black.withOpacity(0.3),
                         padding: const EdgeInsets.only(bottom: 30, top: 15),
                         child: _buildBottomUI(),
                       ),
                     ],
                   ),
-          ),
-        );
-      },
+                ],
+              )
+            : Column(
+                children: [
+                  Container(
+                    color: Colors.black,
+                    height: 60,
+                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
+                    child: _buildTopBarMenu(),
+                  ),
+                  Expanded(
+                    child: GestureDetector(
+                      onTap: () {
+                        if (_showFilters) setState(() => _showFilters = false);
+                        if (_activeTopMenu != 'none') setState(() => _activeTopMenu = 'none');
+                        if (_showTopSettings) setState(() => _showTopSettings = false);
+                      },
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Container(
+                            color: Colors.black,
+                            width: double.infinity,
+                            height: double.infinity,
+                            child: Center(
+                              // Mengisi Full Width untuk 16:9 
+                              child: _aspectRatio == '16:9'
+                                  ? SizedBox(
+                                      width: double.infinity,
+                                      height: MediaQuery.of(context).size.width * 16 / 9,
+                                      child: FittedBox(
+                                        fit: BoxFit.cover,
+                                        child: SizedBox(
+                                          width: _controller!.value.previewSize?.height ?? 1,
+                                          height: _controller!.value.previewSize?.width ?? 1,
+                                          child: cameraContent,
+                                        ),
+                                      ),
+                                    )
+                                  : AspectRatio(
+                                      aspectRatio: _getAspectRatio(),
+                                      child: ClipRect(
+                                        child: FittedBox(
+                                          fit: BoxFit.cover,
+                                          child: SizedBox(
+                                            width: _controller!.value.previewSize?.height ?? 1,
+                                            height: _controller!.value.previewSize?.width ?? 1,
+                                            child: cameraContent,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                            ),
+                          ),
+                          Positioned.fill(child: _buildGridLines()),
+                          Positioned.fill(child: _buildGridLinesVertical()),
+                          Positioned(
+                            bottom: 20,
+                            left: 0,
+                            right: 0,
+                            child: _showFilters ? _buildFilterCarousel() : _buildZoomAndWandOverlay(),
+                          ),
+                          if (_showTopSettings)
+                            Positioned(
+                              top: 0, left: 0, right: 0,
+                              child: _buildTopSettingsPanel(),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  Container(
+                    color: Colors.black,
+                    padding: const EdgeInsets.only(bottom: 30, top: 15),
+                    child: _buildBottomUI(),
+                  ),
+                ],
+              ),
+      ),
     );
-  }
-}
-
-class _MinimalistFocusPainter extends CustomPainter {
-  final Color color;
-
-  _MinimalistFocusPainter({required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..strokeWidth = 1.5
-      ..style = PaintingStyle.stroke;
-
-    final length = size.width * 0.25;
-
-    // Top left corner
-    canvas.drawLine(const Offset(0, 0), Offset(length, 0), paint);
-    canvas.drawLine(const Offset(0, 0), Offset(0, length), paint);
-
-    // Top right corner
-    canvas.drawLine(Offset(size.width, 0), Offset(size.width - length, 0), paint);
-    canvas.drawLine(Offset(size.width, 0), Offset(size.width, length), paint);
-
-    // Bottom left corner
-    canvas.drawLine(Offset(0, size.height), Offset(length, size.height), paint);
-    canvas.drawLine(Offset(0, size.height), Offset(0, size.height - length), paint);
-
-    // Bottom right corner
-    canvas.drawLine(Offset(size.width, size.height), Offset(size.width - length, size.height), paint);
-    canvas.drawLine(Offset(size.width, size.height), Offset(size.width, size.height - length), paint);
-
-    // Center circle
-    final center = Offset(size.width / 2, size.height / 2);
-    canvas.drawCircle(center, 4, paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant _MinimalistFocusPainter oldDelegate) {
-    return oldDelegate.color != color;
-  }
-}
-
-class _SunThumbShape extends SliderComponentShape {
-  final Color color;
-  const _SunThumbShape({required this.color});
-
-  @override
-  Size getPreferredSize(bool isEnabled, bool isDiscrete) {
-    return const Size(20, 20);
-  }
-
-  @override
-  void paint(
-    PaintingContext context,
-    Offset center, {
-    required Animation<double> activationAnimation,
-    required Animation<double> enableAnimation,
-    required bool isDiscrete,
-    required TextPainter labelPainter,
-    required RenderBox parentBox,
-    required SliderThemeData sliderTheme,
-    required TextDirection textDirection,
-    required double value,
-    required double textScaleFactor,
-    required Size sizeWithOverflow,
-  }) {
-    final Canvas canvas = context.canvas;
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-
-    // Draw sun circle
-    canvas.drawCircle(center, 4, paint);
-
-    // Draw sun rays
-    final rayLength = 3.0;
-    final innerRadius = 6.0;
-    for (int i = 0; i < 8; i++) {
-      final angle = i * (math.pi / 4);
-      final dx1 = math.cos(angle) * innerRadius;
-      final dy1 = math.sin(angle) * innerRadius;
-      final dx2 = math.cos(angle) * (innerRadius + rayLength);
-      final dy2 = math.sin(angle) * (innerRadius + rayLength);
-      
-      canvas.drawLine(
-        Offset(center.dx + dx1, center.dy + dy1),
-        Offset(center.dx + dx2, center.dy + dy2),
-        paint,
-      );
-    }
   }
 }
