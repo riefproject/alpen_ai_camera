@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
+import 'package:flutter/foundation.dart';
 
 import 'package:alpen_ai_camera/core/math/pose_score_calculator.dart';
 import 'package:alpen_ai_camera/data/datasources/image_processing/image_preprocessor_datasource.dart';
@@ -25,6 +27,39 @@ import 'package:path_provider/path_provider.dart';
 import '../widgets/filter_applier.dart';
 import '../widgets/pose_ghost_overlay.dart';
 import 'gallery_screen.dart';
+
+// GPU-accelerated filter using dart:ui ColorFilter
+Future<Uint8List?> _applyFilterWithGpu(Uint8List imageBytes, List<double> matrix) async {
+  final codec = await ui.instantiateImageCodec(imageBytes);
+  final frame = await codec.getNextFrame();
+  final srcImage = frame.image;
+  final width = srcImage.width;
+  final height = srcImage.height;
+
+  final recorder = ui.PictureRecorder();
+  final canvas = ui.Canvas(recorder);
+  final paint = ui.Paint()..colorFilter = ui.ColorFilter.matrix(matrix);
+  canvas.drawImage(srcImage, ui.Offset.zero, paint);
+  srcImage.dispose();
+
+  final picture = recorder.endRecording();
+  final dstImage = await picture.toImage(width, height);
+  picture.dispose();
+
+  final byteData = await dstImage.toByteData(format: ui.ImageByteFormat.rawRgba);
+  dstImage.dispose();
+  if (byteData == null) return null;
+
+  final completer = Completer<ui.Image>();
+  ui.decodeImageFromPixels(
+    byteData.buffer.asUint8List(), width, height,
+    ui.PixelFormat.rgba8888, completer.complete,
+  );
+  final finalImg = await completer.future;
+  final pngData = await finalImg.toByteData(format: ui.ImageByteFormat.png);
+  finalImg.dispose();
+  return pngData?.buffer.asUint8List();
+}
 
 // Widget Jangka Sorong (Ruler) sederhana untuk Zoom
 class ZoomRuler extends StatefulWidget {
@@ -165,7 +200,6 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
   bool _showFilters = false;
   bool _showTopSettings = false; // Panel atas
   String _selectedFilter = 'Asli';
-  String _selectedMode = 'FOTO';
 
   final List<String> _filters = [
     'Asli',
@@ -174,13 +208,14 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
     'Keriangan',
     'Kristal',
   ];
-  final List<String> _cameraModes = ['MALAM', 'VIDEO', 'FOTO', 'POTRET', '64M'];
 
   camera.CameraController? get _previewController =>
       _cameraController.previewController;
 
   String? _latestPhotoPath;
+  bool _isFlashing = false;
   bool _isGalleryBlinking = false;
+  bool _isCapturingHardware = false;
 
   @override
   void initState() {
@@ -217,6 +252,22 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
       capturePhoto: _capturePhoto,
     );
     _cameraController.initialize();
+    _loadLatestPhoto();
+  }
+
+  Future<void> _loadLatestPhoto() async {
+    try {
+      final dir = await getApplicationDocumentsDirectory();
+      final files = dir.listSync().whereType<File>()
+          .where((f) => f.path.endsWith('.jpg') || f.path.endsWith('.png'))
+          .toList();
+      if (files.isNotEmpty) {
+        files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+        if (mounted) setState(() => _latestPhotoPath = files.first.path);
+      }
+    } catch (e) {
+      debugPrint('Gagal memuat foto terakhir: $e');
+    }
   }
 
   Future<void> _toggleCamera() async {
@@ -232,55 +283,89 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
 
   Future<void> _capturePhoto() async {
     final shouldResumePose = _poseController.isTracking;
+    if (_isCapturingHardware) return;
+
+    // Quick white flash feedback IMMEDIATELY when user taps shutter
+    if (mounted) {
+      setState(() {
+        _isCapturingHardware = true;
+        _isFlashing = true;
+      });
+      Future.delayed(const Duration(milliseconds: 50), () {
+        if (mounted) setState(() => _isFlashing = false);
+      });
+    }
+
+    camera.XFile? photo;
     try {
       if (shouldResumePose) {
         await _poseController.suspendTrackingForCapture();
       }
 
-      final photo = await _cameraController.capturePhoto(
+      photo = await _cameraController.capturePhoto(
         delay: _timer > 0 ? Duration(seconds: _timer) : null,
       );
-      if (photo == null) {
-        return;
-      }
-
-      final savedPhotoPath = await _persistCapturedPhoto(photo.path);
-      await Gal.putImage(savedPhotoPath);
-
-      if (mounted) {
-        setState(() {
-          _latestPhotoPath = savedPhotoPath;
-          _isGalleryBlinking = true;
-        });
-        unawaited(_stopGalleryBlink());
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Tersimpan di Galeri!'),
-            duration: Duration(seconds: 2),
-          ),
-        );
-      }
     } catch (e) {
-      debugPrint('Gagal memproses foto: $e');
+      debugPrint('Gagal capture hardware: $e');
     } finally {
+      if (mounted) setState(() => _isCapturingHardware = false);
       if (shouldResumePose) {
         await _poseController.resumeTrackingAfterCapture();
       }
     }
+
+    if (photo == null) return;
+
+    // Process + save in background
+    _processAndSavePhotoInBackground(photo, _selectedFilter);
   }
 
-  Future<String> _persistCapturedPhoto(String sourcePath) async {
-    final dir = await getApplicationDocumentsDirectory();
-    final timestamp = DateTime.now().microsecondsSinceEpoch;
-    final targetPath = '${dir.path}/photo-$timestamp.jpg';
-    final copiedFile = await File(sourcePath).copy(targetPath);
-    return copiedFile.path;
+  Future<void> _processAndSavePhotoInBackground(camera.XFile photo, String filterName) async {
+    try {
+      // 1. Save original to system gallery without blocking
+      Gal.putImage(photo.path).catchError((e) {
+        debugPrint('Gal save error: $e');
+      });
+
+      // 2. Immediately copy original photo to app directory so gallery icon updates instantly
+      final dir = await getApplicationDocumentsDirectory();
+      final fileName = 'photo_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      final finalPath = '${dir.path}/$fileName';
+      await File(photo.path).copy(finalPath);
+
+      if (mounted) {
+        setState(() {
+          _latestPhotoPath = finalPath;
+          _isGalleryBlinking = true;
+        });
+        Future.delayed(const Duration(milliseconds: 200), () {
+          if (mounted) setState(() => _isGalleryBlinking = false);
+        });
+      }
+
+      // 3. If there is a filter, process it asynchronously and overwrite the file when done
+      final filterMatrix = filterName.toLowerCase() != 'asli'
+          ? FilterApplier.getFilterMatrix(filterName)
+          : null;
+
+      if (filterMatrix != null) {
+        _applyAndSaveFilterAsync(photo.path, finalPath, filterMatrix);
+      }
+    } catch (e) {
+      debugPrint('Gagal memproses foto di background: $e');
+    }
   }
 
-  Future<void> _stopGalleryBlink() async {
-    await Future<void>.delayed(const Duration(milliseconds: 200));
-    if (mounted) {
-      setState(() => _isGalleryBlinking = false);
+  // Runs the heavy filter logic completely detached from the main capture flow
+  Future<void> _applyAndSaveFilterAsync(String sourcePath, String destPath, List<double> matrix) async {
+    try {
+      final imageBytes = await File(sourcePath).readAsBytes();
+      final processedBytes = await _applyFilterWithGpu(imageBytes, matrix);
+      if (processedBytes != null) {
+        await File(destPath).writeAsBytes(processedBytes);
+      }
+    } catch (e) {
+      debugPrint('Gagal apply filter: $e');
     }
   }
 
@@ -1168,46 +1253,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                     ),
                   ],
                 )
-              : ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _cameraModes.length,
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  itemBuilder: (context, index) {
-                    final mode = _cameraModes[index];
-                    final isSelected = _selectedMode == mode;
-                    return GestureDetector(
-                      onTap: () => setState(() => _selectedMode = mode),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 16),
-                        alignment: Alignment.center,
-                        child: Container(
-                          padding: isSelected
-                              ? const EdgeInsets.symmetric(
-                                  horizontal: 14,
-                                  vertical: 4,
-                                )
-                              : null,
-                          decoration: isSelected
-                              ? BoxDecoration(
-                                  color: Colors.white,
-                                  borderRadius: BorderRadius.circular(20),
-                                )
-                              : null,
-                          child: Text(
-                            mode,
-                            style: TextStyle(
-                              color: isSelected ? Colors.black : Colors.white,
-                              fontWeight: isSelected
-                                  ? FontWeight.bold
-                                  : FontWeight.w500,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
+              : const SizedBox(),
         ),
 
         const SizedBox(height: 20),
@@ -1260,19 +1306,19 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                     onTap: _capturePhoto,
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 100),
-                      width: _cameraController.isCapturing ? 70 : 80,
-                      height: _cameraController.isCapturing ? 70 : 80,
+                      width: _isCapturingHardware ? 70 : 80,
+                      height: _isCapturingHardware ? 70 : 80,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         border: Border.all(color: Colors.white, width: 3),
                       ),
                       child: Center(
                         child: Container(
-                          width: _cameraController.isCapturing ? 56 : 66,
-                          height: _cameraController.isCapturing ? 56 : 66,
+                          width: _isCapturingHardware ? 56 : 66,
+                          height: _isCapturingHardware ? 56 : 66,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: _cameraController.isCapturing
+                            color: _isCapturingHardware
                                 ? Colors.grey
                                 : Colors.white,
                           ),
@@ -1338,8 +1384,10 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
           child: camera.CameraPreview(previewController),
         );
 
-        return Scaffold(
-          backgroundColor: Colors.black,
+        return Stack(
+          children: [
+            Scaffold(
+              backgroundColor: Colors.black,
           body: SafeArea(
             child: _aspectRatio == 'Full'
                 ? Stack(
@@ -1512,7 +1560,20 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                       ),
                     ],
                   ),
-          ),
+            ), // End SafeArea
+            ), // End Scaffold
+            // WHITE FLASH on capture
+            if (_isFlashing)
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: AnimatedOpacity(
+                    opacity: _isFlashing ? 1.0 : 0.0,
+                    duration: const Duration(milliseconds: 50),
+                    child: Container(color: Colors.white),
+                  ),
+                ),
+              ),
+          ],
         );
       },
     );
