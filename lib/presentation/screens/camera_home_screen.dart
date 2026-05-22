@@ -394,6 +394,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                 child: child,
               ),
             ),
+            ..._buildPoseOverlayWidgets(),
             if (_focusIndicatorPosition != null) ...[
               // Focus Box
               Positioned(
@@ -936,7 +937,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
         ),
       ),
       Positioned(
-        top: 12,
+        top: _aspectRatio == 'Full' ? 72 : 12,
         left: 12,
         right: 12,
         child: Row(
@@ -1485,7 +1486,6 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                               ),
                               Positioned.fill(child: _buildGridLines()),
                               Positioned.fill(child: _buildGridLinesVertical()),
-                              ..._buildPoseOverlayWidgets(),
                               Positioned(
                                 bottom: 20,
                                 left: 0,
@@ -1536,6 +1536,7 @@ class _MinimalistFocusPainter extends CustomPainter {
     canvas.drawLine(const Offset(0, 0), Offset(length, 0), paint);
     canvas.drawLine(const Offset(0, 0), Offset(0, length), paint);
 
+    // Top right corner
     canvas.drawLine(
       Offset(size.width, 0),
       Offset(size.width - length, 0),
@@ -1550,6 +1551,7 @@ class _MinimalistFocusPainter extends CustomPainter {
       paint,
     );
 
+    // Bottom right corner
     canvas.drawLine(
       Offset(size.width, size.height),
       Offset(size.width - length, size.height),
@@ -1561,6 +1563,7 @@ class _MinimalistFocusPainter extends CustomPainter {
       paint,
     );
 
+    // Center circle
     final center = Offset(size.width / 2, size.height / 2);
     canvas.drawCircle(center, 4, paint);
   }

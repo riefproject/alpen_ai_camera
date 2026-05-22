@@ -144,7 +144,7 @@ class PoseGhostOverlayPainter extends CustomPainter {
 
       final color = isCandidate
           ? Colors.cyanAccent.withValues(alpha: 0.62)
-          : _scoreColor(segmentScores[segment.key]);
+          : _segmentColor(segment.key, segmentScores);
       final paint = Paint()
         ..color = color
         ..strokeWidth = isCandidate ? 2.2 : 4.2
@@ -167,14 +167,16 @@ class PoseGhostOverlayPainter extends CustomPainter {
     }
 
     for (final landmark in byName.values) {
+      final score = landmarkScores[landmark.name];
       final confidence = landmark.visibility ?? 1;
       final color = isCandidate
           ? Colors.cyanAccent.withValues(alpha: 0.62)
           : confidence < 0.35
           ? Colors.white38
-          : _scoreColor(landmarkScores[landmark.name]);
+          : _scoreColor(score);
+      final center = _projectLandmark(landmark, size);
       canvas.drawCircle(
-        _projectLandmark(landmark, size),
+        center,
         isCandidate ? 3 : 4.2,
         Paint()..color = color.withValues(alpha: isCandidate ? 0.8 : 0.95),
       );
@@ -235,6 +237,11 @@ class PoseGhostOverlayPainter extends CustomPainter {
     if (score == null) {
       return defaultColor;
     }
+    return _scoreColor(score);
+  }
+
+  Color _segmentColor(String segment, Map<String, double> segmentScores) {
+    final score = segmentScores[segment];
     return _scoreColor(score);
   }
 

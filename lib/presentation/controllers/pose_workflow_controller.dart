@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 
 import 'package:alpen_ai_camera/data/datasources/camera/camera_frame_datasource.dart';
 import 'package:alpen_ai_camera/domain/entities/pose_match_result.dart';
@@ -23,12 +22,12 @@ class PoseWorkflowController extends ChangeNotifier {
     required CameraService cameraService,
     required AnalyzeLivePoseUseCase analyzeLivePoseUseCase,
     required BuildPoseTemplateFromUploadUseCase
-        buildPoseTemplateFromUploadUseCase,
+    buildPoseTemplateFromUploadUseCase,
     required Future<void> Function() capturePhoto,
-  })  : _cameraService = cameraService,
-        _analyzeLivePoseUseCase = analyzeLivePoseUseCase,
-        _buildPoseTemplateFromUploadUseCase = buildPoseTemplateFromUploadUseCase,
-        _capturePhoto = capturePhoto;
+  }) : _cameraService = cameraService,
+       _analyzeLivePoseUseCase = analyzeLivePoseUseCase,
+       _buildPoseTemplateFromUploadUseCase = buildPoseTemplateFromUploadUseCase,
+       _capturePhoto = capturePhoto;
 
   static const Duration _frameInterval = Duration(milliseconds: 100);
   static const Duration _autoCaptureHold = Duration(milliseconds: 800);
@@ -60,7 +59,8 @@ class PoseWorkflowController extends ChangeNotifier {
       _status == PoseWorkflowStatus.matched;
   bool get isMatched => _lastMatchResult?.isMatched ?? false;
   bool get autoCaptureEnabled => _autoCaptureEnabled;
-  List<PoseTemplate> get templates => List<PoseTemplate>.unmodifiable(_templates);
+  List<PoseTemplate> get templates =>
+      List<PoseTemplate>.unmodifiable(_templates);
   PoseTemplate? get selectedTemplate => _selectedTemplate;
   PoseMatchResult? get lastMatchResult => _lastMatchResult;
   double get score => _lastMatchResult?.score ?? 0;
@@ -96,8 +96,9 @@ class PoseWorkflowController extends ChangeNotifier {
 
       _selectedTemplate ??= _templates.first;
       _status = PoseWorkflowStatus.tracking;
-      _frameSubscription =
-          _cameraService.startImageStream().listen(_handleFrame);
+      _frameSubscription = _cameraService.startImageStream().listen(
+        _handleFrame,
+      );
     } catch (error) {
       _status = PoseWorkflowStatus.error;
       _lastRawError = error.toString();
@@ -108,8 +109,8 @@ class PoseWorkflowController extends ChangeNotifier {
   }
 
   Future<void> refreshTemplates() async {
-    _templates =
-        await _analyzeLivePoseUseCase.poseRepository.getAvailableTemplates();
+    _templates = await _analyzeLivePoseUseCase.poseRepository
+        .getAvailableTemplates();
     if (_selectedTemplate != null) {
       for (final template in _templates) {
         if (template.templateId == _selectedTemplate!.templateId) {
@@ -201,12 +202,16 @@ class PoseWorkflowController extends ChangeNotifier {
       _lastRawError = null;
       _lastMatchResult = null;
       _matchedSince = null;
-      _status = wasActive ? PoseWorkflowStatus.tracking : PoseWorkflowStatus.inactive;
+      _status = wasActive
+          ? PoseWorkflowStatus.tracking
+          : PoseWorkflowStatus.inactive;
       if (wasActive) {
         await resumeTrackingAfterCapture();
       }
     } catch (error) {
-      _status = wasActive ? PoseWorkflowStatus.error : PoseWorkflowStatus.inactive;
+      _status = wasActive
+          ? PoseWorkflowStatus.error
+          : PoseWorkflowStatus.inactive;
       _lastRawError = error.toString();
       _errorMessage = _friendlyError(error);
     }
@@ -331,7 +336,8 @@ class PoseWorkflowController extends ChangeNotifier {
         message.contains('tidak cukup jelas')) {
       return 'Pose tidak jelas. Pilih gambar dengan tubuh terlihat penuh.';
     }
-    if (message.contains('terlalu kecil') || message.contains('terlihat penuh')) {
+    if (message.contains('terlalu kecil') ||
+        message.contains('terlihat penuh')) {
       return 'Tubuh tidak terlihat penuh.';
     }
     if (message.contains('background terlalu ramai') ||
