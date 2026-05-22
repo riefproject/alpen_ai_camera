@@ -1,0 +1,7 @@
+# Mengabaikan folder platform bawaan dari perhitungan statistik bahasa pemrograman GitHub (Linguist)
+web/* linguist-vendored
+android/* linguist-vendored
+ios/* linguist-vendored
+macos/* linguist-vendored
+linux/* linguist-vendored
+windows/* linguist-vendored

@@ -6,6 +6,7 @@ import 'package:hive_ce_flutter/hive_flutter.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Hive.initFlutter();
+  await Hive.openBox<bool>('favorites_box');
   runApp(const AlpenAiCameraApp());
 }
 
