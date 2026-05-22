@@ -18,8 +18,12 @@ class PoseFrameModel {
   final DateTime capturedAt;
 
   PoseFrame toEntity() {
-    throw UnimplementedError(
-      'PoseFrameModel.toEntity belum diimplementasikan.',
+    return PoseFrame(
+      frameId: frameId,
+      landmarks: landmarks.map((landmark) => landmark.toEntity()).toList(),
+      width: width,
+      height: height,
+      capturedAt: capturedAt,
     );
   }
 }

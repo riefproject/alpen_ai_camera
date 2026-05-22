@@ -15,10 +15,8 @@ class PoseDetectorServiceImpl implements PoseDetectorService {
   PoseDetectorDataSource get poseDetectorDataSource => _poseDetectorDataSource;
 
   @override
-  Future<PoseFrame> detectFromImage(String imagePath) {
-    throw UnimplementedError(
-      'PoseDetectorServiceImpl.detectFromImage belum diimplementasikan.',
-    );
+  Future<PoseFrame> detectFromImage(String imagePath) async {
+    return (await _poseDetectorDataSource.detectFromImage(imagePath)).toEntity();
   }
 
   @override
@@ -26,9 +24,18 @@ class PoseDetectorServiceImpl implements PoseDetectorService {
     Uint8List bytes, {
     required int width,
     required int height,
-  }) {
-    throw UnimplementedError(
-      'PoseDetectorServiceImpl.detectFromBytes belum diimplementasikan.',
-    );
+    int rotationDegrees = 0,
+    int formatRaw = 17,
+    int bytesPerRow = 0,
+  }) async {
+    return (await _poseDetectorDataSource.detectFromBytes(
+      bytes,
+      width: width,
+      height: height,
+      rotationDegrees: rotationDegrees,
+      formatRaw: formatRaw,
+      bytesPerRow: bytesPerRow,
+    ))
+        .toEntity();
   }
 }

@@ -1,5 +1,9 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui';
 
+import 'package:alpen_ai_camera/data/datasources/camera/camera_frame_datasource.dart';
 import 'package:camera/camera.dart' as camera;
 
 import 'package:alpen_ai_camera/domain/entities/camera_session.dart';
@@ -18,6 +22,7 @@ class CameraServiceImpl implements CameraService {
   int _activeCameraIndex = 0;
   double _minZoomLevel = _defaultMinZoomLevel;
   double _maxZoomLevel = _defaultMaxZoomLevel;
+  StreamController<CameraFramePayload>? _imageStreamController;
 
   @override
   camera.CameraController? get previewController => _previewController;
@@ -171,6 +176,46 @@ class CameraServiceImpl implements CameraService {
   }
 
   @override
+  Stream<CameraFramePayload> startImageStream() {
+    final controller = _requireController();
+    if (_imageStreamController != null) {
+      return _imageStreamController!.stream;
+    }
+
+    final streamController = StreamController<CameraFramePayload>.broadcast(
+      onCancel: () {
+        if (!(_imageStreamController?.hasListener ?? false)) {
+          unawaited(stopImageStream());
+        }
+      },
+    );
+    _imageStreamController = streamController;
+
+    controller.startImageStream((image) {
+      if (streamController.isClosed) {
+        return;
+      }
+
+      streamController.add(_cameraImageToPayload(image));
+    });
+
+    return streamController.stream;
+  }
+
+  @override
+  Future<void> stopImageStream() async {
+    final streamController = _imageStreamController;
+    _imageStreamController = null;
+
+    final controller = _previewController;
+    if (controller != null && controller.value.isStreamingImages) {
+      await controller.stopImageStream();
+    }
+
+    await streamController?.close();
+  }
+
+  @override
   Future<camera.XFile> takePicture() async {
     final controller = _requireController();
     return controller.takePicture();
@@ -178,6 +223,7 @@ class CameraServiceImpl implements CameraService {
 
   @override
   Future<void> dispose() async {
+    await stopImageStream();
     final controller = _previewController;
     _previewController = null;
     _activeSession = null;
@@ -190,11 +236,15 @@ class CameraServiceImpl implements CameraService {
   }
 
   Future<void> _bindCamera(camera.CameraDescription description) async {
+    await stopImageStream();
     final previousController = _previewController;
     final nextController = camera.CameraController(
       description,
-      camera.ResolutionPreset.max,
+      camera.ResolutionPreset.high,
       enableAudio: false,
+      imageFormatGroup: Platform.isAndroid
+          ? camera.ImageFormatGroup.nv21
+          : camera.ImageFormatGroup.bgra8888,
     );
 
     _previewController = nextController;
@@ -206,6 +256,80 @@ class CameraServiceImpl implements CameraService {
     await nextController.initialize();
     _minZoomLevel = await nextController.getMinZoomLevel();
     _maxZoomLevel = await nextController.getMaxZoomLevel();
+  }
+
+  CameraFramePayload _cameraImageToPayload(camera.CameraImage image) {
+    if (Platform.isAndroid && image.planes.length == 3) {
+      return CameraFramePayload(
+        bytes: _yuv420ToNv21(image),
+        width: image.width,
+        height: image.height,
+        rotationDegrees: currentCamera?.sensorOrientation ?? 0,
+        formatRaw: 17,
+        bytesPerRow: image.width,
+        planeCount: image.planes.length,
+        diagnosticLabel: 'android-yuv420-converted-nv21',
+      );
+    }
+
+    if (image.planes.length == 1) {
+      return CameraFramePayload(
+        bytes: image.planes.first.bytes,
+        width: image.width,
+        height: image.height,
+        rotationDegrees: currentCamera?.sensorOrientation ?? 0,
+        formatRaw: image.format.raw,
+        bytesPerRow: image.planes.first.bytesPerRow,
+        planeCount: image.planes.length,
+        diagnosticLabel: 'single-plane-${image.format.group.name}',
+      );
+    }
+
+    return CameraFramePayload(
+      bytes: Uint8List(0),
+      width: image.width,
+      height: image.height,
+      rotationDegrees: currentCamera?.sensorOrientation ?? 0,
+      formatRaw: image.format.raw,
+      bytesPerRow: image.planes.isEmpty ? 0 : image.planes.first.bytesPerRow,
+      planeCount: image.planes.length,
+      diagnosticLabel: 'unsupported-${image.format.group.name}',
+    );
+  }
+
+  Uint8List _yuv420ToNv21(camera.CameraImage image) {
+    final width = image.width;
+    final height = image.height;
+    final yPlane = image.planes[0];
+    final uPlane = image.planes[1];
+    final vPlane = image.planes[2];
+    final output = Uint8List(width * height + (width * height ~/ 2));
+
+    var outputIndex = 0;
+    for (var row = 0; row < height; row++) {
+      final rowOffset = row * yPlane.bytesPerRow;
+      for (var col = 0; col < width; col++) {
+        output[outputIndex++] = yPlane.bytes[rowOffset + col];
+      }
+    }
+
+    final uvHeight = height ~/ 2;
+    final uvWidth = width ~/ 2;
+    final uPixelStride = uPlane.bytesPerPixel ?? 1;
+    final vPixelStride = vPlane.bytesPerPixel ?? 1;
+
+    for (var row = 0; row < uvHeight; row++) {
+      final uRowOffset = row * uPlane.bytesPerRow;
+      final vRowOffset = row * vPlane.bytesPerRow;
+      for (var col = 0; col < uvWidth; col++) {
+        final uIndex = uRowOffset + col * uPixelStride;
+        final vIndex = vRowOffset + col * vPixelStride;
+        output[outputIndex++] = vPlane.bytes[vIndex];
+        output[outputIndex++] = uPlane.bytes[uIndex];
+      }
+    }
+
+    return output;
   }
 
   int _resolveInitialCameraIndex(int fallbackIndex) {

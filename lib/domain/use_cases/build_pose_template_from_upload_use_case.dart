@@ -20,9 +20,12 @@ class BuildPoseTemplateFromUploadUseCase {
   Future<PoseTemplate> call({
     required String imagePath,
     required String templateName,
-  }) {
-    throw UnimplementedError(
-      'BuildPoseTemplateFromUploadUseCase.call belum diimplementasikan.',
+  }) async {
+    final template = await _poseTemplateBuilderService.createFromImage(
+      imagePath: imagePath,
+      templateName: templateName,
     );
+    await _poseRepository.saveTemplate(template);
+    return template;
   }
 }

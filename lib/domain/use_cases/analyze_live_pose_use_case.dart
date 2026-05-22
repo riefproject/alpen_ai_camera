@@ -28,9 +28,27 @@ class AnalyzeLivePoseUseCase {
     required Uint8List frameBytes,
     required int width,
     required int height,
-  }) {
-    throw UnimplementedError(
-      'AnalyzeLivePoseUseCase.call belum diimplementasikan.',
+    int rotationDegrees = 0,
+    int formatRaw = 17,
+    int bytesPerRow = 0,
+  }) async {
+    final template = await _poseRepository.getTemplateById(templateId);
+    if (template == null) {
+      throw StateError('Template pose tidak ditemukan.');
+    }
+
+    final candidatePose = await _poseDetectorService.detectFromBytes(
+      frameBytes,
+      width: width,
+      height: height,
+      rotationDegrees: rotationDegrees,
+      formatRaw: formatRaw,
+      bytesPerRow: bytesPerRow,
+    );
+
+    return _poseScoreCalculator.calculate(
+      referencePose: template,
+      candidatePose: candidatePose,
     );
   }
 }

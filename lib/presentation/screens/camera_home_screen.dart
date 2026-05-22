@@ -1,58 +1,30 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
+
+import 'package:alpen_ai_camera/core/math/pose_score_calculator.dart';
+import 'package:alpen_ai_camera/data/datasources/image_processing/image_preprocessor_datasource.dart';
+import 'package:alpen_ai_camera/data/datasources/local/pose_template_local_datasource.dart';
+import 'package:alpen_ai_camera/data/datasources/ml/pose_detector_datasource.dart';
+import 'package:alpen_ai_camera/data/repositories_impl/pose_repository_impl.dart';
 import 'package:alpen_ai_camera/data/services_impl/camera_service_impl.dart';
+import 'package:alpen_ai_camera/data/services_impl/pose_detector_service_impl.dart';
+import 'package:alpen_ai_camera/data/services_impl/pose_outline_builder_service_impl.dart';
+import 'package:alpen_ai_camera/data/services_impl/pose_template_builder_service_impl.dart';
+import 'package:alpen_ai_camera/domain/use_cases/analyze_live_pose_use_case.dart';
+import 'package:alpen_ai_camera/domain/use_cases/build_pose_template_from_upload_use_case.dart';
 import 'package:alpen_ai_camera/presentation/controllers/camera_controller.dart'
     as app_camera;
-import 'dart:math' as math;
-import 'dart:ui' as ui;
-import 'package:alpen_ai_camera/data/services_impl/camera_service_impl.dart';
-import 'package:alpen_ai_camera/presentation/controllers/camera_controller.dart'
-    as app_camera;
+import 'package:alpen_ai_camera/presentation/controllers/pose_workflow_controller.dart';
+import 'package:alpen_ai_camera/presentation/screens/pose_library_screen.dart';
 import 'package:camera/camera.dart' as camera;
-import 'package:flutter/foundation.dart' as camera;
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
+
 import '../widgets/filter_applier.dart';
+import '../widgets/pose_ghost_overlay.dart';
 import 'gallery_screen.dart';
-
-// GPU-accelerated filter using dart:ui ColorFilter (much faster than pixel-by-pixel)
-Future<Uint8List?> _applyFilterWithGpu(Uint8List imageBytes, List<double> matrix) async {
-  final codec = await ui.instantiateImageCodec(imageBytes);
-  final frame = await codec.getNextFrame();
-  final srcImage = frame.image;
-  final width = srcImage.width;
-  final height = srcImage.height;
-
-  final recorder = ui.PictureRecorder();
-  final canvas = ui.Canvas(recorder);
-  final paint = ui.Paint()
-    ..colorFilter = ui.ColorFilter.matrix(matrix);
-  canvas.drawImage(srcImage, ui.Offset.zero, paint);
-  srcImage.dispose();
-
-  final picture = recorder.endRecording();
-  final dstImage = await picture.toImage(width, height);
-  picture.dispose();
-
-  final byteData = await dstImage.toByteData(format: ui.ImageByteFormat.rawRgba);
-  dstImage.dispose();
-  if (byteData == null) return null;
-
-  // Re-encode RGBA bytes back to a PNG via dart:ui
-  final completer = Completer<ui.Image>();
-  ui.decodeImageFromPixels(
-    byteData.buffer.asUint8List(),
-    width,
-    height,
-    ui.PixelFormat.rgba8888,
-    completer.complete,
-  );
-  final finalImg = await completer.future;
-  final pngData = await finalImg.toByteData(format: ui.ImageByteFormat.png);
-  finalImg.dispose();
-  return pngData?.buffer.asUint8List();
-}
 
 // Widget Jangka Sorong (Ruler) sederhana untuk Zoom
 class ZoomRuler extends StatefulWidget {
@@ -84,13 +56,17 @@ class _ZoomRulerState extends State<ZoomRuler> {
   void initState() {
     super.initState();
     // Hitung posisi awal berdasarkan initialValue
-    double initialOffset = ((widget.initialValue - widget.min) / (widget.max - widget.min)) * (_divisions * _itemWidth);
+    double initialOffset =
+        ((widget.initialValue - widget.min) / (widget.max - widget.min)) *
+        (_divisions * _itemWidth);
     _scrollController = ScrollController(initialScrollOffset: initialOffset);
     _scrollController.addListener(_onScroll);
   }
 
   void _onScroll() {
-    if (!_isUserScrolling) return; // Prevent feedback loop from programmatic jumps
+    if (!_isUserScrolling) {
+      return; // Prevent feedback loop from programmatic jumps
+    }
     double offset = _scrollController.offset;
     double maxOffset = _divisions * _itemWidth;
     double percent = (offset / maxOffset).clamp(0.0, 1.0);
@@ -102,7 +78,9 @@ class _ZoomRulerState extends State<ZoomRuler> {
   void didUpdateWidget(covariant ZoomRuler oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.initialValue != widget.initialValue && !_isUserScrolling) {
-      double targetOffset = ((widget.initialValue - widget.min) / (widget.max - widget.min)) * (_divisions * _itemWidth);
+      double targetOffset =
+          ((widget.initialValue - widget.min) / (widget.max - widget.min)) *
+          (_divisions * _itemWidth);
       if (_scrollController.hasClients) {
         if ((_scrollController.offset - targetOffset).abs() > 1.0) {
           _scrollController.jumpTo(targetOffset);
@@ -120,7 +98,8 @@ class _ZoomRulerState extends State<ZoomRuler> {
         children: [
           NotificationListener<ScrollNotification>(
             onNotification: (notif) {
-              if (notif is ScrollStartNotification && notif.dragDetails != null) {
+              if (notif is ScrollStartNotification &&
+                  notif.dragDetails != null) {
                 _isUserScrolling = true;
               } else if (notif is ScrollEndNotification) {
                 _isUserScrolling = false;
@@ -152,16 +131,12 @@ class _ZoomRulerState extends State<ZoomRuler> {
             ),
           ),
           // Indikator tengah
-          Container(
-            width: 2,
-            height: 20,
-            color: Colors.yellowAccent,
-          ),
+          Container(width: 2, height: 20, color: Colors.yellowAccent),
         ],
       ),
     );
   }
-  
+
   @override
   void dispose() {
     _scrollController.dispose();
@@ -178,129 +153,186 @@ class CameraHomeScreen extends StatefulWidget {
 
 class _CameraHomeScreenState extends State<CameraHomeScreen> {
   late final app_camera.CameraController _cameraController;
+  late final PoseWorkflowController _poseController;
+  late final CameraServiceImpl _cameraService;
+  late final MlKitPoseDetectorDataSource _poseDetectorDataSource;
+  late final PoseOutlineBuilderServiceImpl _poseOutlineBuilderService;
   Offset? _focusIndicatorPosition;
-  String _activeTopMenu = 'none'; 
+  String _activeTopMenu = 'none';
   String _aspectRatio = '4:3';
   String _hdrMode = 'AUTO';
-  int _timer = 0; 
-  bool _aiEnabled = true;
+  int _timer = 0;
   bool _showFilters = false;
   bool _showTopSettings = false; // Panel atas
   String _selectedFilter = 'Asli';
   String _selectedMode = 'FOTO';
-  
-  double _currentZoom = 1.0;
-  double _minAppZoom = 0.5;
-  double _maxAppZoom = 10.0;
-  double _minHardwareZoom = 1.0;
-  double _maxHardwareZoom = 10.0;
 
-  final List<String> _filters = ['Asli', 'Alami', 'Manis', 'Keriangan', 'Kristal'];
+  final List<String> _filters = [
+    'Asli',
+    'Alami',
+    'Manis',
+    'Keriangan',
+    'Kristal',
+  ];
+  final List<String> _cameraModes = ['MALAM', 'VIDEO', 'FOTO', 'POTRET', '64M'];
 
   camera.CameraController? get _previewController =>
       _cameraController.previewController;
 
   String? _latestPhotoPath;
-  bool _isFlashing = false;
   bool _isGalleryBlinking = false;
-  bool _isCapturingHardware = false;
-
-  camera.CameraController? get _previewController =>
-      _cameraController.previewController;
 
   @override
   void initState() {
     super.initState();
-    _initCamera();
-  }
-
-  Future<void> _initCamera() async {
-    try {
-      _cameras = await availableCameras();
-      if (_cameras.isNotEmpty) {
-        _setCamera(_cameras.first);
-      }
-    } catch (e) {
-      debugPrint('Error initializing camera: $e');
-    }
-  }
-
-  Future<void> _setCamera(CameraDescription camera) async {
-    _controller?.dispose();
-    _controller = CameraController(
-      camera,
-      ResolutionPreset.max,
-      enableAudio: false,
+    _cameraService = CameraServiceImpl();
+    _cameraController = app_camera.CameraController(
+      cameraService: _cameraService,
     );
-
-    try {
-      await _controller!.initialize();
-      _minHardwareZoom = await _controller!.getMinZoomLevel();
-      _maxHardwareZoom = await _controller!.getMaxZoomLevel();
-      
-      // Walau UI bisa diset 0.5 sd 10.0, pas nge-hit hardware akan dilimit aman
-      _minAppZoom = 0.5;
-      _maxAppZoom = 10.0;
-      
-      await _controller!.setFlashMode(_flashMode);
-      if (mounted) {
-        setState(() => _isReady = true);
-      }
-    } catch (e) {
-      debugPrint('Camera initialization error: $e');
-    }
+    final poseRepository = PoseRepositoryImpl(
+      localDataSource: HivePoseTemplateLocalDataSource(),
+    );
+    _poseDetectorDataSource = MlKitPoseDetectorDataSource();
+    final poseDetectorService = PoseDetectorServiceImpl(
+      poseDetectorDataSource: _poseDetectorDataSource,
+    );
+    _poseOutlineBuilderService = PoseOutlineBuilderServiceImpl();
+    final templateBuilderService = PoseTemplateBuilderServiceImpl(
+      imagePreprocessorDataSource:
+          const PassthroughImagePreprocessorDataSource(),
+      poseDetectorService: poseDetectorService,
+      poseOutlineBuilderService: _poseOutlineBuilderService,
+    );
+    _poseController = PoseWorkflowController(
+      cameraService: _cameraService,
+      analyzeLivePoseUseCase: AnalyzeLivePoseUseCase(
+        poseRepository: poseRepository,
+        poseDetectorService: poseDetectorService,
+        poseScoreCalculator: const PoseScoreCalculator(),
+      ),
+      buildPoseTemplateFromUploadUseCase: BuildPoseTemplateFromUploadUseCase(
+        poseRepository: poseRepository,
+        poseTemplateBuilderService: templateBuilderService,
+      ),
+      capturePhoto: _capturePhoto,
+    );
+    _cameraController.initialize();
   }
 
-  void _toggleCamera() {
-    if (_cameras.length > 1) {
-      final currentLensDir = _controller!.description.lensDirection;
-      final newCamera = _cameras.firstWhere(
-        (cam) => cam.lensDirection != currentLensDir,
-        orElse: () => _cameras.first,
-      );
-      setState(() => _isReady = false);
-      _setCamera(newCamera);
+  Future<void> _toggleCamera() async {
+    await _cameraController.switchCamera();
+    if (!mounted) {
+      return;
     }
+
+    setState(() {
+      _focusIndicatorPosition = null;
+    });
   }
-  
+
   Future<void> _capturePhoto() async {
-    if (_controller == null || !_isReady || _isCapturing) return;
-    
-    setState(() => _isCapturing = true);
-    
+    final shouldResumePose = _poseController.isTracking;
     try {
-      if (_timer > 0) {
-        await Future.delayed(Duration(seconds: _timer));
+      if (shouldResumePose) {
+        await _poseController.suspendTrackingForCapture();
       }
-      
-      final XFile photo = await _controller!.takePicture();
-      
-      // Save to gallery using gal
-      await Gal.putImage(photo.path);
-      
+
+      final photo = await _cameraController.capturePhoto(
+        delay: _timer > 0 ? Duration(seconds: _timer) : null,
+      );
+      if (photo == null) {
+        return;
+      }
+
+      final savedPhotoPath = await _persistCapturedPhoto(photo.path);
+      await Gal.putImage(savedPhotoPath);
+
       if (mounted) {
         setState(() {
-          _latestPhotoPath = savedImage.path;
+          _latestPhotoPath = savedPhotoPath;
           _isGalleryBlinking = true;
         });
-        Future.delayed(const Duration(milliseconds: 200), () {
-          if (mounted) setState(() => _isGalleryBlinking = false);
-        });
+        unawaited(_stopGalleryBlink());
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Tersimpan di Galeri!'),
+            duration: Duration(seconds: 2),
+          ),
+        );
       }
     } catch (e) {
       debugPrint('Gagal memproses foto: $e');
     } finally {
-      if (mounted) {
-        setState(() => _isCapturing = false);
+      if (shouldResumePose) {
+        await _poseController.resumeTrackingAfterCapture();
       }
     }
   }
+
+  Future<String> _persistCapturedPhoto(String sourcePath) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final timestamp = DateTime.now().microsecondsSinceEpoch;
+    final targetPath = '${dir.path}/photo-$timestamp.jpg';
+    final copiedFile = await File(sourcePath).copy(targetPath);
+    return copiedFile.path;
+  }
+
+  Future<void> _stopGalleryBlink() async {
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    if (mounted) {
+      setState(() => _isGalleryBlinking = false);
+    }
+  }
+
+  Future<void> _togglePoseAssistant() async {
+    await _poseController.toggle();
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _activeTopMenu = 'none';
+      _showTopSettings = false;
+      _showFilters = false;
+    });
+  }
+
+  Future<void> _openPoseLibrary() async {
+    await _poseController.refreshTemplates();
+    if (!mounted) {
+      return;
+    }
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => PoseLibraryScreen(controller: _poseController),
+      ),
+    );
+  }
+
+  Future<void> _openGallery() async {
+    await Navigator.of(context).push<void>(
+      PageRouteBuilder<void>(
+        pageBuilder: (context, animation, secondaryAnimation) =>
+            const GalleryScreen(),
+        transitionsBuilder: (context, animation, secondaryAnimation, child) {
+          return FadeTransition(opacity: animation, child: child);
+        },
+      ),
+    );
+  }
+
+  Future<void> _setFlashMode(camera.FlashMode mode) async {
+    await _cameraController.setFlashMode(mode);
+    if (!mounted) {
+      return;
+    }
 
     setState(() {
       _activeTopMenu = 'none';
     });
   }
-  
+
   void _setZoom(double zoom) {
     _cameraController.setZoomLevel(zoom);
   }
@@ -330,7 +362,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
         final accentColor = _cameraController.isFocusExposureLocked
             ? Colors.lightGreenAccent
             : Colors.yellowAccent;
-            
+
         bool isTooRight = false;
         double sliderLeft = 0;
         double lockLeft = 0;
@@ -345,8 +377,12 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
             sliderLeft = _focusIndicatorPosition!.dx + 48;
           }
           // Lock icon di atas slider brightness
-          lockLeft = sliderLeft + 3; // Nengahin icon dengan slider (width 30, icon width 24)
-          lockTop = _focusIndicatorPosition!.dy - 85; // Di atas slider (height 120 -> center at dy, top is dy - 60)
+          lockLeft =
+              sliderLeft +
+              3; // Nengahin icon dengan slider (width 30, icon width 24)
+          lockTop =
+              _focusIndicatorPosition!.dy -
+              85; // Di atas slider (height 120 -> center at dy, top is dy - 60)
         }
 
         return Stack(
@@ -449,10 +485,13 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
 
   @override
   void dispose() {
+    _poseController.dispose();
+    _poseDetectorDataSource.close();
+    _poseOutlineBuilderService.close();
     _cameraController.dispose();
     super.dispose();
   }
-  
+
   void _toggleTopSettings() {
     setState(() {
       _showTopSettings = !_showTopSettings;
@@ -475,7 +514,10 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Pengatur Waktu', style: TextStyle(color: Colors.white, fontSize: 14)),
+              const Text(
+                'Pengatur Waktu',
+                style: TextStyle(color: Colors.white, fontSize: 14),
+              ),
               Row(
                 children: [
                   _buildTopTimerOption(0, Icons.timer_off),
@@ -491,12 +533,15 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Pengaturan', style: TextStyle(color: Colors.white, fontSize: 14)),
+              const Text(
+                'Pengaturan',
+                style: TextStyle(color: Colors.white, fontSize: 14),
+              ),
               IconButton(
                 icon: const Icon(Icons.settings_outlined, color: Colors.white),
                 onPressed: () {
-                   setState(() => _showTopSettings = false);
-                   // To real settings...
+                  setState(() => _showTopSettings = false);
+                  // To real settings...
                 },
               ),
             ],
@@ -506,8 +551,12 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
             child: GestureDetector(
               onTap: _toggleTopSettings,
               child: Container(
-                width: 40, height: 4,
-                decoration: const BoxDecoration(color: Colors.white70, borderRadius: BorderRadius.all(Radius.circular(4))),
+                width: 40,
+                height: 4,
+                decoration: const BoxDecoration(
+                  color: Colors.white70,
+                  borderRadius: BorderRadius.all(Radius.circular(4)),
+                ),
               ),
             ),
           ),
@@ -528,7 +577,11 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
           shape: BoxShape.circle,
           color: isSelected ? const Color(0xFFD4E157) : Colors.white24,
         ),
-        child: Icon(icon, color: isSelected ? Colors.black : Colors.white, size: 20),
+        child: Icon(
+          icon,
+          color: isSelected ? Colors.black : Colors.white,
+          size: 20,
+        ),
       ),
     );
   }
@@ -537,8 +590,19 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
     return Stack(
       alignment: Alignment.center,
       children: [
-        Icon(Icons.crop_free, color: isSelected ? Colors.black : Colors.white, size: 28),
-        Text(ratio, style: TextStyle(color: isSelected ? Colors.black : Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+        Icon(
+          Icons.crop_free,
+          color: isSelected ? Colors.black : Colors.white,
+          size: 28,
+        ),
+        Text(
+          ratio,
+          style: TextStyle(
+            color: isSelected ? Colors.black : Colors.white,
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
       ],
     );
   }
@@ -567,7 +631,10 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
       return Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          const Text('Flash', style: TextStyle(color: Colors.white, fontSize: 14)),
+          const Text(
+            'Flash',
+            style: TextStyle(color: Colors.white, fontSize: 14),
+          ),
           _buildFlashOption(camera.FlashMode.off, Icons.flash_off),
           _buildFlashOption(camera.FlashMode.always, Icons.flash_on),
           _buildFlashOption(camera.FlashMode.auto, Icons.flash_auto),
@@ -578,7 +645,10 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
       return Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          const Text('HDR', style: TextStyle(color: Colors.white, fontSize: 14)),
+          const Text(
+            'HDR',
+            style: TextStyle(color: Colors.white, fontSize: 14),
+          ),
           _buildTextOption('hdr', 'OFF', _hdrMode == 'OFF'),
           _buildTextOption('hdr', 'ON', _hdrMode == 'ON'),
           _buildTextOption('hdr', 'AUTO', _hdrMode == 'AUTO'),
@@ -588,7 +658,10 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
       return Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          const Text('Rasio aspek', style: TextStyle(color: Colors.white, fontSize: 14)),
+          const Text(
+            'Rasio aspek',
+            style: TextStyle(color: Colors.white, fontSize: 14),
+          ),
           _buildRatioOption('1:1', _aspectRatio == '1:1'),
           _buildRatioOption('4:3', _aspectRatio == '4:3'),
           _buildRatioOption('16:9', _aspectRatio == '16:9'),
@@ -599,10 +672,14 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
 
     IconData getFlashIcon() {
       switch (_cameraController.flashMode) {
-        case camera.FlashMode.off: return Icons.flash_off;
-        case camera.FlashMode.always: return Icons.flash_on;
-        case camera.FlashMode.auto: return Icons.flash_auto;
-        case camera.FlashMode.torch: return Icons.highlight;
+        case camera.FlashMode.off:
+          return Icons.flash_off;
+        case camera.FlashMode.always:
+          return Icons.flash_on;
+        case camera.FlashMode.auto:
+          return Icons.flash_auto;
+        case camera.FlashMode.torch:
+          return Icons.highlight;
       }
     }
 
@@ -618,24 +695,41 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text('HDR', style: TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+              const Text(
+                'HDR',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
               if (_hdrMode != 'ON')
-                Text(_hdrMode, style: const TextStyle(color: Colors.white70, fontSize: 9)),
+                Text(
+                  _hdrMode,
+                  style: const TextStyle(color: Colors.white70, fontSize: 9),
+                ),
             ],
           ),
         ),
         GestureDetector(
-          onTap: () => setState(() => _aiEnabled = !_aiEnabled),
+          onTap: _togglePoseAssistant,
           child: Container(
             padding: const EdgeInsets.all(4),
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 1.5),
+              border: Border.all(
+                color: _poseController.isActive
+                    ? Colors.yellowAccent
+                    : Colors.white,
+                width: 1.5,
+              ),
             ),
             child: Text(
               'AI',
               style: TextStyle(
-                color: _aiEnabled ? Colors.yellowAccent : Colors.white,
+                color: _poseController.isActive
+                    ? Colors.yellowAccent
+                    : Colors.white,
                 fontSize: 10,
                 fontWeight: FontWeight.bold,
               ),
@@ -644,11 +738,17 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
         ),
         GestureDetector(
           onTap: () => setState(() => _activeTopMenu = 'ratio'),
-          child: _buildRatioIcon(_aspectRatio == 'Full' ? 'Full' : _aspectRatio),
+          child: _buildRatioIcon(
+            _aspectRatio == 'Full' ? 'Full' : _aspectRatio,
+          ),
         ),
         GestureDetector(
           onTap: _toggleTopSettings,
-          child: Icon(_showTopSettings ? Icons.close : Icons.more_vert, color: Colors.white, size: 24),
+          child: Icon(
+            _showTopSettings ? Icons.close : Icons.more_vert,
+            color: Colors.white,
+            size: 24,
+          ),
         ),
       ],
     );
@@ -664,7 +764,11 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
           shape: BoxShape.circle,
           color: isSelected ? const Color(0xFFD4E157) : Colors.white24,
         ),
-        child: Icon(icon, color: isSelected ? Colors.black : Colors.white, size: 18),
+        child: Icon(
+          icon,
+          color: isSelected ? Colors.black : Colors.white,
+          size: 18,
+        ),
       ),
     );
   }
@@ -686,7 +790,11 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
         ),
         child: Text(
           value,
-          style: TextStyle(color: isSelected ? Colors.black : Colors.white, fontWeight: FontWeight.bold, fontSize: 12),
+          style: TextStyle(
+            color: isSelected ? Colors.black : Colors.white,
+            fontWeight: FontWeight.bold,
+            fontSize: 12,
+          ),
         ),
       ),
     );
@@ -702,7 +810,13 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Text('${_cameraController.currentZoomLevel.toStringAsFixed(1)}X', style: const TextStyle(color: Colors.yellowAccent, fontWeight: FontWeight.bold)),
+              Text(
+                '${_cameraController.currentZoomLevel.toStringAsFixed(1)}X',
+                style: const TextStyle(
+                  color: Colors.yellowAccent,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
               const SizedBox(width: 10),
               Expanded(
                 child: ZoomRuler(
@@ -719,13 +833,26 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.black26),
-                child: const Icon(Icons.qr_code_scanner, color: Colors.white, size: 20),
+              GestureDetector(
+                onTap: _openPoseLibrary,
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.black26,
+                  ),
+                  child: const Icon(
+                    Icons.accessibility_new,
+                    color: Colors.white,
+                    size: 20,
+                  ),
+                ),
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 6,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.black45,
                   borderRadius: BorderRadius.circular(20),
@@ -735,24 +862,40 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                   children: [
                     GestureDetector(
                       onTap: () => _setZoom(_cameraController.wideZoomPreset),
-                      child: const Icon(Icons.park, color: Colors.white, size: 16),
+                      child: const Icon(
+                        Icons.park,
+                        color: Colors.white,
+                        size: 16,
+                      ),
                     ),
                     const SizedBox(width: 20),
                     GestureDetector(
-                      onTap: () => _setZoom(_cameraController.standardZoomPreset),
+                      onTap: () =>
+                          _setZoom(_cameraController.standardZoomPreset),
                       child: Container(
                         padding: const EdgeInsets.all(6),
                         decoration: BoxDecoration(
                           shape: BoxShape.circle,
                           border: Border.all(color: Colors.white, width: 1.5),
                         ),
-                        child: Text('${_cameraController.currentZoomLevel.toStringAsFixed(1)}X', style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold)),
+                        child: Text(
+                          '${_cameraController.currentZoomLevel.toStringAsFixed(1)}X',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ),
                     const SizedBox(width: 20),
                     GestureDetector(
                       onTap: () => _setZoom(_cameraController.teleZoomPreset),
-                      child: const Icon(Icons.nature, color: Colors.white, size: 16),
+                      child: const Icon(
+                        Icons.nature,
+                        color: Colors.white,
+                        size: 16,
+                      ),
                     ),
                   ],
                 ),
@@ -761,8 +904,15 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                 onTap: () => setState(() => _showFilters = true),
                 child: Container(
                   padding: const EdgeInsets.all(8),
-                  decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.black26),
-                  child: const Icon(Icons.auto_fix_high, color: Colors.white, size: 20),
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.black26,
+                  ),
+                  child: const Icon(
+                    Icons.auto_fix_high,
+                    color: Colors.white,
+                    size: 20,
+                  ),
                 ),
               ),
             ],
@@ -770,6 +920,85 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
         ],
       ),
     );
+  }
+
+  List<Widget> _buildPoseOverlayWidgets() {
+    final template = _poseController.selectedTemplate;
+    if (!_poseController.isActive || template == null) {
+      return const <Widget>[];
+    }
+
+    return <Widget>[
+      Positioned.fill(
+        child: PoseGhostOverlay(
+          template: template,
+          matchResult: _poseController.lastMatchResult,
+        ),
+      ),
+      Positioned(
+        top: 12,
+        left: 12,
+        right: 12,
+        child: Row(
+          children: [
+            GestureDetector(
+              onTap: _openPoseLibrary,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 7,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.44),
+                  borderRadius: BorderRadius.circular(18),
+                  border: Border.all(color: Colors.white24),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.accessibility_new,
+                      color: _poseController.isMatched
+                          ? Colors.lightGreenAccent
+                          : Colors.white,
+                      size: 16,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      '${(_poseController.score * 100).round()}%',
+                      style: TextStyle(
+                        color: _poseController.isMatched
+                            ? Colors.lightGreenAccent
+                            : Colors.white,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const Spacer(),
+            Flexible(
+              child: IgnorePointer(
+                child: Text(
+                  _poseController.lightingFeedback ??
+                      _poseController.feedbackMessage,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ];
   }
 
   Widget _buildFilterCarousel() {
@@ -787,7 +1016,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
         itemBuilder: (context, index) {
           final filter = _filters[index];
           final isSelected = _selectedFilter == filter;
-          
+
           return GestureDetector(
             onTap: () => setState(() => _selectedFilter = filter),
             child: Padding(
@@ -800,16 +1029,23 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                     height: 60,
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      border: Border.all(color: isSelected ? Colors.white : Colors.transparent, width: 2),
+                      border: Border.all(
+                        color: isSelected ? Colors.white : Colors.transparent,
+                        width: 2,
+                      ),
                     ),
                     child: ClipOval(
                       child: SizedBox(
-                        width: 60, height: 60,
+                        width: 60,
+                        height: 60,
                         child: FittedBox(
                           fit: BoxFit.cover,
                           child: SizedBox(
-                            width: previewController.value.previewSize?.height ?? 1,
-                            height: previewController.value.previewSize?.width ?? 1,
+                            width:
+                                previewController.value.previewSize?.height ??
+                                1,
+                            height:
+                                previewController.value.previewSize?.width ?? 1,
                             child: FilterApplier(
                               filterName: filter,
                               child: camera.CameraPreview(previewController),
@@ -825,7 +1061,9 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                     style: TextStyle(
                       color: isSelected ? Colors.white : Colors.white70,
                       fontSize: 12,
-                      fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+                      fontWeight: isSelected
+                          ? FontWeight.bold
+                          : FontWeight.normal,
                     ),
                   ),
                 ],
@@ -860,15 +1098,29 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
       ],
     );
   }
-  
+
   double _getAspectRatio() {
-    switch(_aspectRatio) {
-      case '1:1': return 1.0;
-      case '16:9': return 9 / 16;
+    switch (_aspectRatio) {
+      case '1:1':
+        return 1.0;
+      case '16:9':
+        return 9 / 16;
       case 'Full':
       case '4:3':
       default:
-         return 3 / 4;
+        return 3 / 4;
+    }
+  }
+
+  void _closeTransientCameraUi() {
+    if (_showFilters) {
+      setState(() => _showFilters = false);
+    }
+    if (_activeTopMenu != 'none') {
+      setState(() => _activeTopMenu = 'none');
+    }
+    if (_showTopSettings) {
+      setState(() => _showTopSettings = false);
     }
   }
 
@@ -882,29 +1134,83 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 8,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.white24,
                         borderRadius: BorderRadius.circular(20),
                       ),
-                      child: const Text('Percantik', style: TextStyle(color: Colors.white)),
+                      child: const Text(
+                        'Percantik',
+                        style: TextStyle(color: Colors.white),
+                      ),
                     ),
                     const SizedBox(width: 16),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 8,
+                      ),
                       decoration: BoxDecoration(
                         color: Colors.white,
                         borderRadius: BorderRadius.circular(20),
                       ),
-                      child: const Text('Filter', style: TextStyle(color: Colors.black, fontWeight: FontWeight.bold)),
+                      child: const Text(
+                        'Filter',
+                        style: TextStyle(
+                          color: Colors.black,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ),
                   ],
                 )
-              : const SizedBox.shrink(),
+              : ListView.builder(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _cameraModes.length,
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  itemBuilder: (context, index) {
+                    final mode = _cameraModes[index];
+                    final isSelected = _selectedMode == mode;
+                    return GestureDetector(
+                      onTap: () => setState(() => _selectedMode = mode),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        alignment: Alignment.center,
+                        child: Container(
+                          padding: isSelected
+                              ? const EdgeInsets.symmetric(
+                                  horizontal: 14,
+                                  vertical: 4,
+                                )
+                              : null,
+                          decoration: isSelected
+                              ? BoxDecoration(
+                                  color: Colors.white,
+                                  borderRadius: BorderRadius.circular(20),
+                                )
+                              : null,
+                          child: Text(
+                            mode,
+                            style: TextStyle(
+                              color: isSelected ? Colors.black : Colors.white,
+                              fontWeight: isSelected
+                                  ? FontWeight.bold
+                                  : FontWeight.w500,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
+                ),
         ),
-        
+
         const SizedBox(height: 20),
-        
+
         // Tombol Kamera Bawah
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 30),
@@ -913,17 +1219,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
             children: [
               // Tombol Galeri
               GestureDetector(
-                onTap: () {
-                  Navigator.push(
-                    context,
-                    PageRouteBuilder(
-                      pageBuilder: (context, animation, secondaryAnimation) => const GalleryScreen(),
-                      transitionsBuilder: (context, animation, secondaryAnimation, child) {
-                        return FadeTransition(opacity: animation, child: child);
-                      },
-                    ),
-                  );
-                },
+                onTap: _openGallery,
                 child: AnimatedOpacity(
                   opacity: _isGalleryBlinking ? 0.2 : 1.0,
                   duration: const Duration(milliseconds: 100),
@@ -944,12 +1240,16 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                               height: 50,
                               gaplessPlayback: true,
                             )
-                          : const Icon(Icons.photo, color: Colors.white, size: 24),
+                          : const Icon(
+                              Icons.photo_library_outlined,
+                              color: Colors.white,
+                              size: 24,
+                            ),
                     ),
                   ),
                 ),
               ),
-              
+
               // Tombol Shutter
               SizedBox(
                 width: 80,
@@ -971,7 +1271,9 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                           height: _cameraController.isCapturing ? 56 : 66,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: _cameraController.isCapturing ? Colors.grey : Colors.white,
+                            color: _cameraController.isCapturing
+                                ? Colors.grey
+                                : Colors.white,
                           ),
                         ),
                       ),
@@ -979,7 +1281,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                   ),
                 ),
               ),
-              
+
               // Flip Kamera
               GestureDetector(
                 onTap: _toggleCamera,
@@ -1003,7 +1305,10 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: _cameraController,
+      listenable: Listenable.merge(<Listenable>[
+        _cameraController,
+        _poseController,
+      ]),
       builder: (context, child) {
         final previewController = _previewController;
         if (!_cameraController.isReady || previewController == null) {
@@ -1032,52 +1337,168 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
           child: camera.CameraPreview(previewController),
         );
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: _aspectRatio == 'Full'
-            ? Stack(
-                children: [
-                  // Full Screen Camera Feed
-                  SizedBox.expand(
-                    child: FittedBox(
-                      fit: BoxFit.cover,
-                      child: SizedBox(
-                        width: _controller!.value.previewSize?.height ?? 1,
-                        height: _controller!.value.previewSize?.width ?? 1,
-                        child: cameraContent,
+        return Scaffold(
+          backgroundColor: Colors.black,
+          body: SafeArea(
+            child: _aspectRatio == 'Full'
+                ? Stack(
+                    children: [
+                      SizedBox.expand(
+                        child: _buildInteractivePreview(
+                          child: FittedBox(
+                            fit: BoxFit.cover,
+                            child: SizedBox(
+                              width:
+                                  previewController.value.previewSize?.height ??
+                                  1,
+                              height:
+                                  previewController.value.previewSize?.width ??
+                                  1,
+                              child: cameraContent,
+                            ),
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                  // Overlays on top of Full Screen Feed
-                  Column(
+                      Column(
+                        children: [
+                          Container(
+                            color: Colors.black.withValues(alpha: 0.3),
+                            height: 60,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 20.0,
+                            ),
+                            child: _buildTopBarMenu(),
+                          ),
+                          Expanded(
+                            child: GestureDetector(
+                              onTap: _closeTransientCameraUi,
+                              child: Stack(
+                                children: [
+                                  Positioned.fill(child: _buildGridLines()),
+                                  Positioned.fill(
+                                    child: _buildGridLinesVertical(),
+                                  ),
+                                  ..._buildPoseOverlayWidgets(),
+                                  Positioned(
+                                    bottom: 20,
+                                    left: 0,
+                                    right: 0,
+                                    child: _showFilters
+                                        ? _buildFilterCarousel()
+                                        : _buildZoomAndWandOverlay(),
+                                  ),
+                                  if (_showTopSettings)
+                                    Positioned(
+                                      top: 0,
+                                      left: 0,
+                                      right: 0,
+                                      child: _buildTopSettingsPanel(),
+                                    ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          Container(
+                            color: Colors.black.withValues(alpha: 0.3),
+                            padding: const EdgeInsets.only(bottom: 30, top: 15),
+                            child: _buildBottomUI(),
+                          ),
+                        ],
+                      ),
+                    ],
+                  )
+                : Column(
                     children: [
                       Container(
-                        color: Colors.black.withOpacity(0.3),
+                        color: Colors.black,
                         height: 60,
                         padding: const EdgeInsets.symmetric(horizontal: 20.0),
                         child: _buildTopBarMenu(),
                       ),
                       Expanded(
                         child: GestureDetector(
-                          onTap: () {
-                            if (_showFilters) setState(() => _showFilters = false);
-                            if (_activeTopMenu != 'none') setState(() => _activeTopMenu = 'none');
-                            if (_showTopSettings) setState(() => _showTopSettings = false);
-                          },
+                          onTap: _closeTransientCameraUi,
                           child: Stack(
+                            alignment: Alignment.center,
                             children: [
+                              Container(
+                                color: Colors.black,
+                                width: double.infinity,
+                                height: double.infinity,
+                                child: Center(
+                                  child: _aspectRatio == '16:9'
+                                      ? SizedBox(
+                                          width: double.infinity,
+                                          height:
+                                              MediaQuery.of(
+                                                context,
+                                              ).size.width *
+                                              16 /
+                                              9,
+                                          child: _buildInteractivePreview(
+                                            child: FittedBox(
+                                              fit: BoxFit.cover,
+                                              child: SizedBox(
+                                                width:
+                                                    previewController
+                                                        .value
+                                                        .previewSize
+                                                        ?.height ??
+                                                    1,
+                                                height:
+                                                    previewController
+                                                        .value
+                                                        .previewSize
+                                                        ?.width ??
+                                                    1,
+                                                child: cameraContent,
+                                              ),
+                                            ),
+                                          ),
+                                        )
+                                      : AspectRatio(
+                                          aspectRatio: _getAspectRatio(),
+                                          child: _buildInteractivePreview(
+                                            child: ClipRect(
+                                              child: FittedBox(
+                                                fit: BoxFit.cover,
+                                                child: SizedBox(
+                                                  width:
+                                                      previewController
+                                                          .value
+                                                          .previewSize
+                                                          ?.height ??
+                                                      1,
+                                                  height:
+                                                      previewController
+                                                          .value
+                                                          .previewSize
+                                                          ?.width ??
+                                                      1,
+                                                  child: cameraContent,
+                                                ),
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                ),
+                              ),
                               Positioned.fill(child: _buildGridLines()),
                               Positioned.fill(child: _buildGridLinesVertical()),
+                              ..._buildPoseOverlayWidgets(),
                               Positioned(
                                 bottom: 20,
                                 left: 0,
                                 right: 0,
-                                child: _showFilters ? _buildFilterCarousel() : _buildZoomAndWandOverlay(),
+                                child: _showFilters
+                                    ? _buildFilterCarousel()
+                                    : _buildZoomAndWandOverlay(),
                               ),
                               if (_showTopSettings)
                                 Positioned(
-                                  top: 0, left: 0, right: 0,
+                                  top: 0,
+                                  left: 0,
+                                  right: 0,
                                   child: _buildTopSettingsPanel(),
                                 ),
                             ],
@@ -1085,91 +1506,118 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                         ),
                       ),
                       Container(
-                        color: Colors.black.withOpacity(0.3),
+                        color: Colors.black,
                         padding: const EdgeInsets.only(bottom: 30, top: 15),
                         child: _buildBottomUI(),
                       ),
                     ],
                   ),
-                ],
-              )
-            : Column(
-                children: [
-                  Container(
-                    color: Colors.black,
-                    height: 60,
-                    padding: const EdgeInsets.symmetric(horizontal: 20.0),
-                    child: _buildTopBarMenu(),
-                  ),
-                  Expanded(
-                    child: GestureDetector(
-                      onTap: () {
-                        if (_showFilters) setState(() => _showFilters = false);
-                        if (_activeTopMenu != 'none') setState(() => _activeTopMenu = 'none');
-                        if (_showTopSettings) setState(() => _showTopSettings = false);
-                      },
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          Container(
-                            color: Colors.black,
-                            width: double.infinity,
-                            height: double.infinity,
-                            child: Center(
-                              // Mengisi Full Width untuk 16:9 
-                              child: _aspectRatio == '16:9'
-                                  ? SizedBox(
-                                      width: double.infinity,
-                                      height: MediaQuery.of(context).size.width * 16 / 9,
-                                      child: FittedBox(
-                                        fit: BoxFit.cover,
-                                        child: SizedBox(
-                                          width: _controller!.value.previewSize?.height ?? 1,
-                                          height: _controller!.value.previewSize?.width ?? 1,
-                                          child: cameraContent,
-                                        ),
-                                      ),
-                                    )
-                                  : AspectRatio(
-                                      aspectRatio: _getAspectRatio(),
-                                      child: ClipRect(
-                                        child: FittedBox(
-                                          fit: BoxFit.cover,
-                                          child: SizedBox(
-                                            width: _controller!.value.previewSize?.height ?? 1,
-                                            height: _controller!.value.previewSize?.width ?? 1,
-                                            child: cameraContent,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                            ),
-                          ),
-                          Positioned.fill(child: _buildGridLines()),
-                          Positioned.fill(child: _buildGridLinesVertical()),
-                          Positioned(
-                            bottom: 20,
-                            left: 0,
-                            right: 0,
-                            child: _showFilters ? _buildFilterCarousel() : _buildZoomAndWandOverlay(),
-                          ),
-                          if (_showTopSettings)
-                            Positioned(
-                              top: 0, left: 0, right: 0,
-                              child: _buildTopSettingsPanel(),
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  Container(
-                    color: Colors.black,
-                    padding: const EdgeInsets.only(bottom: 30, top: 15),
-                    child: _buildBottomUI(),
-                  ),
-                ],
-              ),
-      ),
+          ),
+        );
+      },
     );
+  }
+}
+
+class _MinimalistFocusPainter extends CustomPainter {
+  _MinimalistFocusPainter({required this.color});
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+
+    final length = size.width * 0.25;
+
+    canvas.drawLine(const Offset(0, 0), Offset(length, 0), paint);
+    canvas.drawLine(const Offset(0, 0), Offset(0, length), paint);
+
+    canvas.drawLine(
+      Offset(size.width, 0),
+      Offset(size.width - length, 0),
+      paint,
+    );
+    canvas.drawLine(Offset(size.width, 0), Offset(size.width, length), paint);
+
+    canvas.drawLine(Offset(0, size.height), Offset(length, size.height), paint);
+    canvas.drawLine(
+      Offset(0, size.height),
+      Offset(0, size.height - length),
+      paint,
+    );
+
+    canvas.drawLine(
+      Offset(size.width, size.height),
+      Offset(size.width - length, size.height),
+      paint,
+    );
+    canvas.drawLine(
+      Offset(size.width, size.height),
+      Offset(size.width, size.height - length),
+      paint,
+    );
+
+    final center = Offset(size.width / 2, size.height / 2);
+    canvas.drawCircle(center, 4, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _MinimalistFocusPainter oldDelegate) {
+    return oldDelegate.color != color;
+  }
+}
+
+class _SunThumbShape extends SliderComponentShape {
+  const _SunThumbShape({required this.color});
+
+  final Color color;
+
+  @override
+  Size getPreferredSize(bool isEnabled, bool isDiscrete) {
+    return const Size(20, 20);
+  }
+
+  @override
+  void paint(
+    PaintingContext context,
+    Offset center, {
+    required Animation<double> activationAnimation,
+    required Animation<double> enableAnimation,
+    required bool isDiscrete,
+    required TextPainter labelPainter,
+    required RenderBox parentBox,
+    required SliderThemeData sliderTheme,
+    required TextDirection textDirection,
+    required double value,
+    required double textScaleFactor,
+    required Size sizeWithOverflow,
+  }) {
+    final canvas = context.canvas;
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5;
+
+    canvas.drawCircle(center, 4, paint);
+
+    const rayLength = 3.0;
+    const innerRadius = 6.0;
+    for (var index = 0; index < 8; index++) {
+      final angle = index * (math.pi / 4);
+      final dx1 = math.cos(angle) * innerRadius;
+      final dy1 = math.sin(angle) * innerRadius;
+      final dx2 = math.cos(angle) * (innerRadius + rayLength);
+      final dy2 = math.sin(angle) * (innerRadius + rayLength);
+
+      canvas.drawLine(
+        Offset(center.dx + dx1, center.dy + dy1),
+        Offset(center.dx + dx2, center.dy + dy2),
+        paint,
+      );
+    }
   }
 }

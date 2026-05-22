@@ -1,5 +1,6 @@
 import 'dart:ui';
 
+import 'package:alpen_ai_camera/data/datasources/camera/camera_frame_datasource.dart';
 import 'package:camera/camera.dart' as camera;
 
 import 'package:alpen_ai_camera/domain/entities/camera_session.dart';
@@ -27,6 +28,8 @@ abstract class CameraService {
   Future<double> getExposureOffsetStepSize();
   Future<double> setExposureOffset(double offset);
   Future<void> setZoomLevel(double zoomLevel);
+  Stream<CameraFramePayload> startImageStream();
+  Future<void> stopImageStream();
   Future<camera.XFile> takePicture();
   Future<void> dispose();
 }

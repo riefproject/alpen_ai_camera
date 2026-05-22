@@ -12,8 +12,16 @@ class GhostOverlayServiceImpl implements GhostOverlayService {
     required int previewWidth,
     required int previewHeight,
   }) {
-    throw UnimplementedError(
-      'GhostOverlayServiceImpl.project belum diimplementasikan.',
-    );
+    return template.landmarks
+        .map(
+          (landmark) => PoseLandmark(
+            name: landmark.name,
+            x: landmark.x * previewWidth,
+            y: landmark.y * previewHeight,
+            z: landmark.z,
+            visibility: landmark.visibility,
+          ),
+        )
+        .toList();
   }
 }

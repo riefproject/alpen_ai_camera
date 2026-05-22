@@ -13,8 +13,10 @@ class CameraSessionModel {
   final DateTime createdAt;
 
   CameraSession toEntity() {
-    throw UnimplementedError(
-      'CameraSessionModel.toEntity belum diimplementasikan.',
+    return CameraSession(
+      sessionId: id,
+      isActive: active,
+      createdAt: createdAt,
     );
   }
 }

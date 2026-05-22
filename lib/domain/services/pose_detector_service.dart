@@ -9,5 +9,8 @@ abstract class PoseDetectorService {
     Uint8List bytes, {
     required int width,
     required int height,
+    int rotationDegrees = 0,
+    int formatRaw = 17,
+    int bytesPerRow = 0,
   });
 }

@@ -17,8 +17,42 @@ class PoseLandmarkModel {
   final double? visibility;
 
   PoseLandmark toEntity() {
-    throw UnimplementedError(
-      'PoseLandmarkModel.toEntity belum diimplementasikan.',
+    return PoseLandmark(
+      name: name,
+      x: x,
+      y: y,
+      z: z,
+      visibility: visibility,
     );
+  }
+
+  factory PoseLandmarkModel.fromEntity(PoseLandmark landmark) {
+    return PoseLandmarkModel(
+      name: landmark.name,
+      x: landmark.x,
+      y: landmark.y,
+      z: landmark.z,
+      visibility: landmark.visibility,
+    );
+  }
+
+  factory PoseLandmarkModel.fromJson(Map<String, dynamic> json) {
+    return PoseLandmarkModel(
+      name: json['name'] as String,
+      x: (json['x'] as num).toDouble(),
+      y: (json['y'] as num).toDouble(),
+      z: (json['z'] as num?)?.toDouble() ?? 0,
+      visibility: (json['visibility'] as num?)?.toDouble(),
+    );
+  }
+
+  Map<String, dynamic> toJson() {
+    return <String, dynamic>{
+      'name': name,
+      'x': x,
+      'y': y,
+      'z': z,
+      'visibility': visibility,
+    };
   }
 }
