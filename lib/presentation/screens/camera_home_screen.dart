@@ -199,6 +199,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
   int _timer = 0;
   bool _showFilters = false;
   bool _showTopSettings = false; // Panel atas
+  bool _showDetectedPoseSkeleton = false;
   String _selectedFilter = 'Asli';
 
   final List<String> _filters = [
@@ -395,6 +396,12 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
     );
   }
 
+  void _toggleDetectedPoseSkeleton() {
+    setState(() {
+      _showDetectedPoseSkeleton = !_showDetectedPoseSkeleton;
+    });
+  }
+
   Future<void> _openGallery() async {
     await Navigator.of(context).push<void>(
       PageRouteBuilder<void>(
@@ -479,7 +486,6 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                 child: child,
               ),
             ),
-            ..._buildPoseOverlayWidgets(),
             if (_focusIndicatorPosition != null) ...[
               // Focus Box
               Positioned(
@@ -1008,19 +1014,30 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
     );
   }
 
-  List<Widget> _buildPoseOverlayWidgets() {
+  Widget? _buildPoseGhostOverlay() {
+    final template = _poseController.selectedTemplate;
+    if (!_poseController.isActive || template == null) {
+      return null;
+    }
+    
+    final previewSize = _previewController?.value.previewSize;
+    final size = previewSize != null ? Size(previewSize.height, previewSize.width) : null;
+
+    return PoseGhostOverlay(
+      template: template,
+      matchResult: _poseController.lastMatchResult,
+      showCandidateSkeleton: _showDetectedPoseSkeleton,
+      previewSize: size,
+    );
+  }
+
+  List<Widget> _buildPoseUIWidgets() {
     final template = _poseController.selectedTemplate;
     if (!_poseController.isActive || template == null) {
       return const <Widget>[];
     }
 
     return <Widget>[
-      Positioned.fill(
-        child: PoseGhostOverlay(
-          template: template,
-          matchResult: _poseController.lastMatchResult,
-        ),
-      ),
       Positioned(
         top: _aspectRatio == 'Full' ? 72 : 12,
         left: 12,
@@ -1065,6 +1082,32 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
               ),
             ),
             const Spacer(),
+            GestureDetector(
+              onTap: _toggleDetectedPoseSkeleton,
+              child: Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: _showDetectedPoseSkeleton
+                      ? Colors.cyanAccent.withValues(alpha: 0.22)
+                      : Colors.black.withValues(alpha: 0.36),
+                  border: Border.all(
+                    color: _showDetectedPoseSkeleton
+                        ? Colors.cyanAccent
+                        : Colors.white24,
+                  ),
+                ),
+                child: Icon(
+                  Icons.polyline,
+                  color: _showDetectedPoseSkeleton
+                      ? Colors.cyanAccent
+                      : Colors.white70,
+                  size: 18,
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
             Flexible(
               child: IgnorePointer(
                 child: Text(
@@ -1427,7 +1470,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                                   Positioned.fill(
                                     child: _buildGridLinesVertical(),
                                   ),
-                                  ..._buildPoseOverlayWidgets(),
+                                  ..._buildPoseUIWidgets(),
                                   Positioned(
                                     bottom: 20,
                                     left: 0,
@@ -1500,7 +1543,13 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                                                         .previewSize
                                                         ?.width ??
                                                     1,
-                                                child: cameraContent,
+                                                child: Stack(
+                                                  children: [
+                                                    cameraContent,
+                                                    if (_buildPoseGhostOverlay() != null)
+                                                      Positioned.fill(child: _buildPoseGhostOverlay()!),
+                                                  ],
+                                                ),
                                               ),
                                             ),
                                           ),
@@ -1524,7 +1573,13 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                                                           .previewSize
                                                           ?.width ??
                                                       1,
-                                                  child: cameraContent,
+                                                  child: Stack(
+                                                    children: [
+                                                      cameraContent,
+                                                      if (_buildPoseGhostOverlay() != null)
+                                                        Positioned.fill(child: _buildPoseGhostOverlay()!),
+                                                    ],
+                                                  ),
                                                 ),
                                               ),
                                             ),
@@ -1534,6 +1589,7 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                               ),
                               Positioned.fill(child: _buildGridLines()),
                               Positioned.fill(child: _buildGridLinesVertical()),
+                              ..._buildPoseUIWidgets(),
                               Positioned(
                                 bottom: 20,
                                 left: 0,

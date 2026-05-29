@@ -7,7 +7,7 @@ import 'package:alpen_ai_camera/domain/entities/pose_template.dart';
 
 class PoseScoreCalculator {
   const PoseScoreCalculator({
-    this.matchThreshold = 0.86,
+    this.matchThreshold = 0.80,
     this.minimumVisibility = 0.35,
   });
 
@@ -22,11 +22,18 @@ class PoseScoreCalculator {
       referencePose: referencePose,
       candidateLandmarks: candidatePose.landmarks,
     );
+
     final mirroredLandmarks = _mirrorHorizontally(candidatePose.landmarks);
     final mirroredResult = _calculateAgainst(
       referencePose: referencePose,
       candidateLandmarks: mirroredLandmarks,
     );
+
+    if (_clearUpperBodyMissCount(normalResult) <= 2 &&
+        _clearUpperBodyMissCount(normalResult) > 0 &&
+        !_hasClearUpperBodyMiss(mirroredResult)) {
+      return normalResult;
+    }
 
     return mirroredResult.score > normalResult.score
         ? mirroredResult
@@ -37,21 +44,27 @@ class PoseScoreCalculator {
     required PoseTemplate referencePose,
     required List<PoseLandmark> candidateLandmarks,
   }) {
+    final visibilityGate = _visibilityGate(candidateLandmarks);
     final reference = _normalize(referencePose.landmarks);
     final candidate = _normalize(candidateLandmarks);
-    if (reference.isEmpty || candidate.isEmpty) {
+    if (reference.isEmpty ||
+        candidate.isEmpty ||
+        visibilityGate.scoreCap == 0) {
       return PoseMatchResult(
         isMatched: false,
         score: 0,
-        feedbackMessage: 'Pose belum terdeteksi jelas',
+        feedbackMessage:
+            visibilityGate.feedbackMessage ?? 'Pose belum terdeteksi jelas',
+        lowConfidenceLandmarks: visibilityGate.missingLandmarks,
         candidateLandmarks: candidateLandmarks,
       );
     }
 
     double totalScore = 0;
+    double matchedLandmarkWeight = 0;
     var matchedLandmarkCount = 0;
     double segmentTotalScore = 0;
-    var matchedSegmentCount = 0;
+    double matchedSegmentWeight = 0;
     final misaligned = <String>[];
     final lowConfidence = <String>[];
     final landmarkScores = <String, double>{};
@@ -70,12 +83,15 @@ class PoseScoreCalculator {
       }
 
       final distance = _distance(entry.value, candidateLandmark);
-      final landmarkScore = (1 - (distance / 0.85)).clamp(0.0, 1.0);
+      final distanceRatio = (distance / _distanceTolerance(entry.key)).clamp(0.0, 1.0);
+      final landmarkScore = 1 - distanceRatio;
+      final weight = _landmarkWeight(entry.key);
       landmarkScores[entry.key] = landmarkScore;
-      totalScore += landmarkScore;
+      totalScore += landmarkScore * weight;
+      matchedLandmarkWeight += weight;
       matchedLandmarkCount++;
 
-      if (landmarkScore < 0.68) {
+      if (landmarkScore < _misalignmentThreshold(entry.key)) {
         misaligned.add(entry.key);
       }
     }
@@ -91,10 +107,11 @@ class PoseScoreCalculator {
         continue;
       }
 
+      final weight = _segmentWeight(segment.key);
       segmentScores[segment.key] = score;
-      segmentTotalScore += score;
-      matchedSegmentCount++;
-      if (score < 0.68) {
+      segmentTotalScore += score * weight;
+      matchedSegmentWeight += weight;
+      if (score < _segmentMisalignmentThreshold(segment.key)) {
         misaligned.addAll(segment.value);
       }
     }
@@ -114,25 +131,99 @@ class PoseScoreCalculator {
       );
     }
 
-    final landmarkAverage = totalScore / matchedLandmarkCount;
-    final segmentAverage = matchedSegmentCount == 0
+    final landmarkAverage = totalScore / matchedLandmarkWeight;
+    final segmentAverage = matchedSegmentWeight == 0
         ? landmarkAverage
-        : segmentTotalScore / matchedSegmentCount;
-    final score = ((landmarkAverage * 0.62) + (segmentAverage * 0.38)).clamp(
+        : segmentTotalScore / matchedSegmentWeight;
+    final score = ((landmarkAverage * 0.48) + (segmentAverage * 0.52)).clamp(
       0.0,
       1.0,
     );
-    final hasBadSegment = segmentScores.values.any((score) => score < 0.68);
+    final gatedScore = math.min(score, visibilityGate.scoreCap);
+    final hasBadSegment = segmentScores.entries.any(
+      (entry) =>
+          entry.value < _blockingSegmentThreshold(entry.key) &&
+          (_upperBodySegments.contains(entry.key) || gatedScore < 0.74),
+    );
     return PoseMatchResult(
-      isMatched: score >= matchThreshold && !hasBadSegment,
-      score: score,
-      feedbackMessage: _feedbackFor(score, uniqueMisaligned, lowConfidence),
-      lowConfidenceLandmarks: lowConfidence,
+      isMatched: gatedScore >= matchThreshold && !hasBadSegment,
+      score: gatedScore,
+      feedbackMessage:
+          visibilityGate.feedbackMessage ??
+          _feedbackFor(gatedScore, uniqueMisaligned, lowConfidence),
+      lowConfidenceLandmarks: <String>{
+        ...lowConfidence,
+        ...visibilityGate.missingLandmarks,
+      }.toList(),
       misalignedLandmarks: uniqueMisaligned,
       candidateLandmarks: candidateLandmarks,
       landmarkScores: landmarkScores,
       segmentScores: segmentScores,
     );
+  }
+
+  _PoseVisibilityGate _visibilityGate(List<PoseLandmark> landmarks) {
+    final visible = <String, PoseLandmark>{
+      for (final landmark in landmarks)
+        if (!_ignoredLandmarks.contains(landmark.name) &&
+            (landmark.visibility ?? 1) >= minimumVisibility)
+          landmark.name: landmark,
+    };
+
+    final missingCore = _coreLandmarks
+        .where((name) => !visible.containsKey(name))
+        .toList();
+    if (missingCore.isNotEmpty) {
+      return _PoseVisibilityGate(
+        scoreCap: 0,
+        feedbackMessage: 'Arahkan badan penuh ke kamera',
+        missingLandmarks: missingCore,
+      );
+    }
+
+    final visibleRequired = _requiredBodyLandmarks
+        .where((name) => visible.containsKey(name))
+        .length;
+    final missingRequired = _requiredBodyLandmarks
+        .where((name) => !visible.containsKey(name))
+        .toList();
+    final visibleLower = _requiredLowerBodyLandmarks
+        .where((name) => visible.containsKey(name))
+        .length;
+    final visibleArms = _requiredArmLandmarks
+        .where((name) => visible.containsKey(name))
+        .length;
+
+    if (visibleRequired < 8) {
+      return _PoseVisibilityGate(
+        scoreCap: 0,
+        feedbackMessage: 'Masuk ke frame dan ikuti outline',
+        missingLandmarks: missingRequired,
+      );
+    }
+    if (visibleLower < 2) {
+      return _PoseVisibilityGate(
+        scoreCap: 0.34,
+        feedbackMessage: 'Pastikan tubuh terlihat penuh',
+        missingLandmarks: missingRequired,
+      );
+    }
+    if (visibleLower < 4) {
+      return _PoseVisibilityGate(
+        scoreCap: 0.52,
+        feedbackMessage: 'Kaki belum terbaca jelas',
+        missingLandmarks: missingRequired,
+      );
+    }
+    if (visibleArms < 3) {
+      return _PoseVisibilityGate(
+        scoreCap: 0.58,
+        feedbackMessage: 'Tangan belum terbaca jelas',
+        missingLandmarks: missingRequired,
+      );
+    }
+
+    return const _PoseVisibilityGate(scoreCap: 1);
   }
 
   List<PoseLandmark> _mirrorHorizontally(List<PoseLandmark> landmarks) {
@@ -149,10 +240,25 @@ class PoseScoreCalculator {
         .toList();
   }
 
+  bool _hasClearUpperBodyMiss(PoseMatchResult result) {
+    return _clearUpperBodyMissCount(result) > 0;
+  }
+
+  int _clearUpperBodyMissCount(PoseMatchResult result) {
+    return result.segmentScores.entries
+        .where(
+          (entry) =>
+              _upperBodySegments.contains(entry.key) &&
+              entry.value < _blockingSegmentThreshold(entry.key),
+        )
+        .length;
+  }
+
   Map<String, PoseLandmark> _normalize(List<PoseLandmark> landmarks) {
     final visible = <String, PoseLandmark>{
       for (final landmark in landmarks)
-        if ((landmark.visibility ?? 1) >= minimumVisibility)
+        if (!_ignoredLandmarks.contains(landmark.name) &&
+            (landmark.visibility ?? 1) >= minimumVisibility)
           landmark.name: landmark,
     };
 
@@ -231,7 +337,7 @@ class PoseScoreCalculator {
             candidatePoints[2]!,
           );
 
-    return ((pointScore * 0.52) + (directionScore * 0.24) + (angleScore * 0.24))
+    return ((pointScore * 0.34) + (directionScore * 0.33) + (angleScore * 0.33))
         .clamp(0.0, 1.0);
   }
 
@@ -287,6 +393,63 @@ class PoseScoreCalculator {
     return math.sqrt(dx * dx + dy * dy);
   }
 
+  double _distanceTolerance(String landmark) {
+    if (_lowerBodyLandmarks.contains(landmark)) {
+      return 1.55;
+    }
+    return 1.15;
+  }
+
+  double _landmarkWeight(String landmark) {
+    if (_coreLandmarks.contains(landmark)) {
+      return 1.15;
+    }
+    if (_lowerBodyLandmarks.contains(landmark)) {
+      return 0.7;
+    }
+    return 1;
+  }
+
+  double _misalignmentThreshold(String landmark) {
+    return _lowerBodyLandmarks.contains(landmark) ? 0.52 : 0.62;
+  }
+
+  double _segmentWeight(String segment) {
+    if (segment == 'leftFoot' || segment == 'rightFoot') {
+      return 0.35;
+    }
+    if (segment == 'leftLeg' || segment == 'rightLeg') {
+      return 0.72;
+    }
+    if (segment == 'torso') {
+      return 1.2;
+    }
+    return 1;
+  }
+
+  double _segmentMisalignmentThreshold(String segment) {
+    if (segment == 'leftFoot' || segment == 'rightFoot') {
+      return 0.42;
+    }
+    if (segment == 'leftLeg' || segment == 'rightLeg') {
+      return 0.52;
+    }
+    return 0.62;
+  }
+
+  double _blockingSegmentThreshold(String segment) {
+    if (segment == 'leftFoot' || segment == 'rightFoot') {
+      return 0.28;
+    }
+    if (segment == 'leftLeg' || segment == 'rightLeg') {
+      return 0.42;
+    }
+    if (segment == 'torso') {
+      return 0.58;
+    }
+    return 0.68;
+  }
+
   String _feedbackFor(
     double score,
     List<String> misaligned,
@@ -337,3 +500,84 @@ const Map<String, List<String>> _segments = <String, List<String>>{
   'leftFoot': <String>['leftAnkle', 'leftFootIndex'],
   'rightFoot': <String>['rightAnkle', 'rightFootIndex'],
 };
+
+const Set<String> _coreLandmarks = <String>{
+  'leftShoulder',
+  'rightShoulder',
+  'leftHip',
+  'rightHip',
+};
+
+const Set<String> _requiredBodyLandmarks = <String>{
+  'leftShoulder',
+  'rightShoulder',
+  'leftElbow',
+  'rightElbow',
+  'leftWrist',
+  'rightWrist',
+  'leftHip',
+  'rightHip',
+  'leftKnee',
+  'rightKnee',
+  'leftAnkle',
+  'rightAnkle',
+};
+
+const Set<String> _requiredArmLandmarks = <String>{
+  'leftElbow',
+  'rightElbow',
+  'leftWrist',
+  'rightWrist',
+};
+
+const Set<String> _requiredLowerBodyLandmarks = <String>{
+  'leftKnee',
+  'rightKnee',
+  'leftAnkle',
+  'rightAnkle',
+};
+
+const Set<String> _lowerBodyLandmarks = <String>{
+  'leftKnee',
+  'rightKnee',
+  'leftAnkle',
+  'rightAnkle',
+  'leftHeel',
+  'rightHeel',
+  'leftFootIndex',
+  'rightFootIndex',
+};
+
+const Set<String> _ignoredLandmarks = <String>{
+  'nose',
+  'leftEyeInner',
+  'leftEye',
+  'leftEyeOuter',
+  'rightEyeInner',
+  'rightEye',
+  'rightEyeOuter',
+  'leftEar',
+  'rightEar',
+  'leftMouth',
+  'rightMouth',
+};
+
+const Set<String> _upperBodySegments = <String>{
+  'torso',
+  'leftUpperArm',
+  'leftLowerArm',
+  'rightUpperArm',
+  'rightLowerArm',
+};
+
+class _PoseVisibilityGate {
+  const _PoseVisibilityGate({
+    required this.scoreCap,
+    this.feedbackMessage,
+    this.missingLandmarks = const <String>[],
+  });
+
+  final double scoreCap;
+  final String? feedbackMessage;
+  final List<String> missingLandmarks;
+}

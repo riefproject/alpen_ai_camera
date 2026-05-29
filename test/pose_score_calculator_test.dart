@@ -158,6 +158,39 @@ void main() {
     expect(result.isMatched, isFalse);
     expect(result.score, 0);
   });
+
+  test('caps score when lower body is not visible', () {
+    final reference = _bodyLandmarks();
+    final upperBodyOnly = reference
+        .where(
+          (landmark) => !<String>{
+            'leftKnee',
+            'rightKnee',
+            'leftAnkle',
+            'rightAnkle',
+          }.contains(landmark.name),
+        )
+        .toList();
+
+    final result = calculator.calculate(
+      referencePose: PoseTemplate(
+        templateId: 'test',
+        name: 'Test',
+        landmarks: reference,
+      ),
+      candidatePose: PoseFrame(
+        frameId: 'frame',
+        landmarks: upperBodyOnly,
+        width: 100,
+        height: 100,
+        capturedAt: DateTime(2026),
+      ),
+    );
+
+    expect(result.isMatched, isFalse);
+    expect(result.score, lessThanOrEqualTo(0.34));
+    expect(result.feedbackMessage, 'Pastikan tubuh terlihat penuh');
+  });
 }
 
 List<PoseLandmark> _bodyLandmarks() {

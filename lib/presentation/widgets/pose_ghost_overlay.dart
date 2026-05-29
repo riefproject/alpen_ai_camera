@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:alpen_ai_camera/domain/entities/pose_landmark.dart';
 import 'package:alpen_ai_camera/domain/entities/pose_match_result.dart';
 import 'package:alpen_ai_camera/domain/entities/pose_outline_point.dart';
@@ -5,10 +7,18 @@ import 'package:alpen_ai_camera/domain/entities/pose_template.dart';
 import 'package:flutter/material.dart';
 
 class PoseGhostOverlay extends StatelessWidget {
-  const PoseGhostOverlay({required this.template, this.matchResult, super.key});
+  const PoseGhostOverlay({
+    required this.template,
+    this.matchResult,
+    this.showCandidateSkeleton = false,
+    this.previewSize,
+    super.key,
+  });
 
   final PoseTemplate template;
   final PoseMatchResult? matchResult;
+  final bool showCandidateSkeleton;
+  final Size? previewSize;
 
   @override
   Widget build(BuildContext context) {
@@ -18,7 +28,8 @@ class PoseGhostOverlay extends StatelessWidget {
           template: template,
           matchResult: matchResult,
           defaultColor: Colors.white,
-          showCandidateSkeleton: false,
+          showCandidateSkeleton: showCandidateSkeleton,
+          previewSize: previewSize,
         ),
         child: const SizedBox.expand(),
       ),
@@ -32,6 +43,7 @@ class PoseOutlinePreview extends StatelessWidget {
     this.color = Colors.white,
     this.matchResult,
     this.showCandidateSkeleton = false,
+    this.previewSize,
     super.key,
   });
 
@@ -39,6 +51,7 @@ class PoseOutlinePreview extends StatelessWidget {
   final Color color;
   final PoseMatchResult? matchResult;
   final bool showCandidateSkeleton;
+  final Size? previewSize;
 
   @override
   Widget build(BuildContext context) {
@@ -48,6 +61,7 @@ class PoseOutlinePreview extends StatelessWidget {
         defaultColor: color,
         matchResult: matchResult,
         showCandidateSkeleton: showCandidateSkeleton,
+        previewSize: previewSize,
       ),
       child: const SizedBox.expand(),
     );
@@ -60,12 +74,14 @@ class PoseGhostOverlayPainter extends CustomPainter {
     required this.defaultColor,
     this.matchResult,
     this.showCandidateSkeleton = false,
+    this.previewSize,
   });
 
   final PoseTemplate template;
   final Color defaultColor;
   final PoseMatchResult? matchResult;
   final bool showCandidateSkeleton;
+  final Size? previewSize;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -102,14 +118,14 @@ class PoseGhostOverlayPainter extends CustomPainter {
     final path = _buildSmoothPath(points, size);
     final outlineColor = _overallColor();
     final glowPaint = Paint()
-      ..color = outlineColor.withValues(alpha: 0.22)
-      ..strokeWidth = 8
+      ..color = outlineColor.withValues(alpha: 0.12)
+      ..strokeWidth = 7
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;
     final outlinePaint = Paint()
-      ..color = outlineColor.withValues(alpha: 0.88)
-      ..strokeWidth = 3
+      ..color = outlineColor.withValues(alpha: 0.58)
+      ..strokeWidth = 2.6
       ..strokeCap = StrokeCap.round
       ..strokeJoin = StrokeJoin.round
       ..style = PaintingStyle.stroke;
@@ -143,17 +159,17 @@ class PoseGhostOverlayPainter extends CustomPainter {
       }
 
       final color = isCandidate
-          ? Colors.cyanAccent.withValues(alpha: 0.62)
+          ? Colors.cyanAccent.withValues(alpha: 0.42)
           : _segmentColor(segment.key, segmentScores);
       final paint = Paint()
-        ..color = color
-        ..strokeWidth = isCandidate ? 2.2 : 4.2
+        ..color = color.withValues(alpha: isCandidate ? 0.48 : 0.64)
+        ..strokeWidth = isCandidate ? 2.0 : 3.6
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
         ..style = PaintingStyle.stroke;
       final glow = Paint()
-        ..color = color.withValues(alpha: isCandidate ? 0.12 : 0.2)
-        ..strokeWidth = isCandidate ? 5 : 8
+        ..color = color.withValues(alpha: isCandidate ? 0.08 : 0.12)
+        ..strokeWidth = isCandidate ? 4.5 : 7
         ..strokeCap = StrokeCap.round
         ..strokeJoin = StrokeJoin.round
         ..style = PaintingStyle.stroke;
@@ -164,22 +180,6 @@ class PoseGhostOverlayPainter extends CustomPainter {
         canvas.drawLine(start, end, glow);
         canvas.drawLine(start, end, paint);
       }
-    }
-
-    for (final landmark in byName.values) {
-      final score = landmarkScores[landmark.name];
-      final confidence = landmark.visibility ?? 1;
-      final color = isCandidate
-          ? Colors.cyanAccent.withValues(alpha: 0.62)
-          : confidence < 0.35
-          ? Colors.white38
-          : _scoreColor(score);
-      final center = _projectLandmark(landmark, size);
-      canvas.drawCircle(
-        center,
-        isCandidate ? 3 : 4.2,
-        Paint()..color = color.withValues(alpha: isCandidate ? 0.8 : 0.95),
-      );
     }
   }
 
@@ -292,12 +292,12 @@ class PoseGhostOverlayPainter extends CustomPainter {
     return oldDelegate.template != template ||
         oldDelegate.defaultColor != defaultColor ||
         oldDelegate.matchResult != matchResult ||
-        oldDelegate.showCandidateSkeleton != showCandidateSkeleton;
+        oldDelegate.showCandidateSkeleton != showCandidateSkeleton ||
+        oldDelegate.previewSize != previewSize;
   }
 }
 
 const Map<String, List<String>> _skeletonSegments = <String, List<String>>{
-  'head': <String>['leftEar', 'leftEye', 'nose', 'rightEye', 'rightEar'],
   'shoulders': <String>['leftShoulder', 'rightShoulder'],
   'torso': <String>[
     'leftShoulder',

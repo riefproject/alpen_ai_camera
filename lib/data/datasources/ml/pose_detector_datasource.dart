@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'dart:ui';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:alpen_ai_camera/data/models/pose_frame_model.dart';
 import 'package:alpen_ai_camera/data/models/pose_landmark_model.dart';
@@ -62,6 +63,7 @@ class MlKitPoseDetectorDataSource implements PoseDetectorDataSource {
       poses.first,
       width: decodedImage.width.round(),
       height: decodedImage.height.round(),
+      rotationDegrees: 0,
     );
   }
 
@@ -107,7 +109,17 @@ class MlKitPoseDetectorDataSource implements PoseDetectorDataSource {
       );
     }
 
-    return _toFrameModel(poses.first, width: width, height: height);
+    return _toFrameModel(
+      _bestLivePose(
+        poses,
+        width: width,
+        height: height,
+        rotationDegrees: rotationDegrees,
+      ),
+      width: width,
+      height: height,
+      rotationDegrees: rotationDegrees,
+    );
   }
 
   void _validateFrameBytes(
@@ -141,14 +153,22 @@ class MlKitPoseDetectorDataSource implements PoseDetectorDataSource {
     pose_mlkit.Pose pose, {
     required int width,
     required int height,
+    required int rotationDegrees,
   }) {
     final landmarks = <PoseLandmarkModel>[];
     for (final entry in pose.landmarks.entries) {
+      final point = _normalizePoint(
+        entry.value.x,
+        entry.value.y,
+        width: width,
+        height: height,
+        rotationDegrees: rotationDegrees,
+      );
       landmarks.add(
         PoseLandmarkModel(
           name: _landmarkName(entry.key),
-          x: (entry.value.x / width).clamp(0.0, 1.0),
-          y: (entry.value.y / height).clamp(0.0, 1.0),
+          x: point.dx,
+          y: point.dy,
           z: entry.value.z,
           visibility: entry.value.likelihood,
         ),
@@ -162,6 +182,81 @@ class MlKitPoseDetectorDataSource implements PoseDetectorDataSource {
       height: height,
       capturedAt: DateTime.now(),
     );
+  }
+
+  pose_mlkit.Pose _bestLivePose(
+    List<pose_mlkit.Pose> poses, {
+    required int width,
+    required int height,
+    required int rotationDegrees,
+  }) {
+    if (poses.length == 1) {
+      return poses.first;
+    }
+
+    double poseScore(pose_mlkit.Pose pose) {
+      final body = pose.landmarks.entries.where((entry) {
+        return _bodyLandmarkTypes.contains(entry.key) &&
+            entry.value.likelihood >= 0.35;
+      }).toList();
+      if (body.isEmpty) {
+        return 0;
+      }
+
+      var minX = double.infinity;
+      var minY = double.infinity;
+      var maxX = double.negativeInfinity;
+      var maxY = double.negativeInfinity;
+      for (final entry in body) {
+        final point = _normalizePoint(
+          entry.value.x,
+          entry.value.y,
+          width: width,
+          height: height,
+          rotationDegrees: rotationDegrees,
+        );
+        minX = math.min(minX, point.dx);
+        minY = math.min(minY, point.dy);
+        maxX = math.max(maxX, point.dx);
+        maxY = math.max(maxY, point.dy);
+      }
+
+      final visibleScore = body.length / _bodyLandmarkTypes.length;
+      final areaScore = ((maxX - minX).abs() * (maxY - minY).abs() * 4).clamp(
+        0.0,
+        1.0,
+      );
+      final centerX = (minX + maxX) / 2;
+      final centerPenalty = (centerX - 0.5).abs().clamp(0.0, 0.5);
+      return (visibleScore * 0.58) + (areaScore * 0.34) - centerPenalty * 0.28;
+    }
+
+    return poses.reduce(
+      (best, pose) => poseScore(pose) > poseScore(best) ? pose : best,
+    );
+  }
+
+  Offset _normalizePoint(
+    double x,
+    double y, {
+    required int width,
+    required int height,
+    required int rotationDegrees,
+  }) {
+    final rotation = rotationDegrees % 360;
+    final bool isRotated = rotation == 90 || rotation == 270;
+    
+    // ML Kit returns coordinates relative to the rotated image dimensions.
+    final int rotatedWidth = isRotated ? height : width;
+    final int rotatedHeight = isRotated ? width : height;
+
+    final normalizedX = rotatedWidth <= 0 ? 0.0 : x / rotatedWidth;
+    final normalizedY = rotatedHeight <= 0 ? 0.0 : y / rotatedHeight;
+
+    // Mirror for front camera (270 usually means front camera on Android)
+    final mirroredDx = rotation == 270 ? 1.0 - normalizedX : normalizedX;
+    
+    return Offset(mirroredDx.clamp(0.0, 1.0), normalizedY.clamp(0.0, 1.0));
   }
 
   Future<Size> _decodeImageSize(Uint8List bytes) async {
@@ -245,3 +340,23 @@ class MlKitPoseDetectorDataSource implements PoseDetectorDataSource {
     }
   }
 }
+
+const Set<pose_mlkit.PoseLandmarkType> _bodyLandmarkTypes =
+    <pose_mlkit.PoseLandmarkType>{
+      pose_mlkit.PoseLandmarkType.leftShoulder,
+      pose_mlkit.PoseLandmarkType.rightShoulder,
+      pose_mlkit.PoseLandmarkType.leftElbow,
+      pose_mlkit.PoseLandmarkType.rightElbow,
+      pose_mlkit.PoseLandmarkType.leftWrist,
+      pose_mlkit.PoseLandmarkType.rightWrist,
+      pose_mlkit.PoseLandmarkType.leftHip,
+      pose_mlkit.PoseLandmarkType.rightHip,
+      pose_mlkit.PoseLandmarkType.leftKnee,
+      pose_mlkit.PoseLandmarkType.rightKnee,
+      pose_mlkit.PoseLandmarkType.leftAnkle,
+      pose_mlkit.PoseLandmarkType.rightAnkle,
+      pose_mlkit.PoseLandmarkType.leftHeel,
+      pose_mlkit.PoseLandmarkType.rightHeel,
+      pose_mlkit.PoseLandmarkType.leftFootIndex,
+      pose_mlkit.PoseLandmarkType.rightFootIndex,
+    };
