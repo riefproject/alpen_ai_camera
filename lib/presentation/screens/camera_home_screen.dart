@@ -8,21 +8,28 @@ import 'package:alpen_ai_camera/core/math/pose_score_calculator.dart';
 import 'package:alpen_ai_camera/data/datasources/image_processing/image_preprocessor_datasource.dart';
 import 'package:alpen_ai_camera/data/datasources/local/pose_template_local_datasource.dart';
 import 'package:alpen_ai_camera/data/datasources/ml/pose_detector_datasource.dart';
+import 'package:alpen_ai_camera/data/datasources/remote/supabase_public_pose_datasource.dart';
 import 'package:alpen_ai_camera/data/repositories_impl/pose_repository_impl.dart';
+import 'package:alpen_ai_camera/data/repositories_impl/public_pose_repository_impl.dart';
 import 'package:alpen_ai_camera/data/services_impl/camera_service_impl.dart';
 import 'package:alpen_ai_camera/data/services_impl/pose_detector_service_impl.dart';
 import 'package:alpen_ai_camera/data/services_impl/pose_outline_builder_service_impl.dart';
 import 'package:alpen_ai_camera/data/services_impl/pose_template_builder_service_impl.dart';
 import 'package:alpen_ai_camera/domain/use_cases/analyze_live_pose_use_case.dart';
 import 'package:alpen_ai_camera/domain/use_cases/build_pose_template_from_upload_use_case.dart';
+import 'package:alpen_ai_camera/main.dart';
 import 'package:alpen_ai_camera/presentation/controllers/camera_controller.dart'
     as app_camera;
 import 'package:alpen_ai_camera/presentation/controllers/pose_workflow_controller.dart';
+import 'package:alpen_ai_camera/presentation/controllers/public_pose_controller.dart';
+import 'package:alpen_ai_camera/presentation/screens/login_screen.dart';
 import 'package:alpen_ai_camera/presentation/screens/pose_library_screen.dart';
+import 'package:alpen_ai_camera/presentation/screens/public_pose_browse_screen.dart';
 import 'package:camera/camera.dart' as camera;
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../widgets/filter_applier.dart';
 import '../widgets/pose_ghost_overlay.dart';
@@ -189,6 +196,7 @@ class CameraHomeScreen extends StatefulWidget {
 class _CameraHomeScreenState extends State<CameraHomeScreen> {
   late final app_camera.CameraController _cameraController;
   late final PoseWorkflowController _poseController;
+  late final PublicPoseController _publicPoseController;
   late final CameraServiceImpl _cameraService;
   late final MlKitPoseDetectorDataSource _poseDetectorDataSource;
   late final PoseOutlineBuilderServiceImpl _poseOutlineBuilderService;
@@ -251,6 +259,13 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
         poseTemplateBuilderService: templateBuilderService,
       ),
       capturePhoto: _capturePhoto,
+    );
+    _publicPoseController = PublicPoseController(
+      repository: PublicPoseRepositoryImpl(
+        dataSource: SupabasePublicPoseDataSourceImpl(
+          client: Supabase.instance.client,
+        ),
+      ),
     );
     _cameraController.initialize();
     _loadLatestPhoto();
@@ -394,6 +409,35 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
         builder: (context) => PoseLibraryScreen(controller: _poseController),
       ),
     );
+  }
+
+  Future<void> _openPublicPoses() async {
+    if (authController.isLoggedIn) {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (context) => PublicPoseBrowseScreen(
+            controller: _publicPoseController,
+          ),
+        ),
+      );
+      return;
+    }
+
+    final loggedIn = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (context) => const LoginScreen(),
+      ),
+    );
+
+    if (loggedIn == true && mounted) {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (context) => PublicPoseBrowseScreen(
+            controller: _publicPoseController,
+          ),
+        ),
+      );
+    }
   }
 
   void _toggleDetectedPoseSkeleton() {
@@ -935,6 +979,21 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
                   ),
                   child: const Icon(
                     Icons.accessibility_new,
+                    color: Colors.white,
+                    size: 20,
+                  ),
+                ),
+              ),
+              GestureDetector(
+                onTap: _openPublicPoses,
+                child: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: const BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: Colors.black26,
+                  ),
+                  child: const Icon(
+                    Icons.public,
                     color: Colors.white,
                     size: 20,
                   ),

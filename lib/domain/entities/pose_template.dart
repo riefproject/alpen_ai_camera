@@ -11,9 +11,9 @@ class PoseTemplate {
     this.sourceImagePath,
     this.sourceImageWidth,
     this.sourceImageHeight,
+    this.isFavorite = false,
   });
 
-  // TODO: Store the reusable reference pose used for overlay guidance and similarity checks.
   final String templateId;
   final String name;
   final List<PoseLandmark> landmarks;
@@ -22,4 +22,5 @@ class PoseTemplate {
   final String? sourceImagePath;
   final int? sourceImageWidth;
   final int? sourceImageHeight;
+  final bool isFavorite;
 }

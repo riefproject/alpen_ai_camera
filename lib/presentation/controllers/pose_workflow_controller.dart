@@ -111,15 +111,23 @@ class PoseWorkflowController extends ChangeNotifier {
   Future<void> refreshTemplates() async {
     _templates = await _analyzeLivePoseUseCase.poseRepository
         .getAvailableTemplates();
+    _templates.sort((a, b) {
+      if (a.isFavorite != b.isFavorite) {
+        return a.isFavorite ? -1 : 1;
+      }
+      return a.name.compareTo(b.name);
+    });
     if (_selectedTemplate != null) {
       for (final template in _templates) {
         if (template.templateId == _selectedTemplate!.templateId) {
           _selectedTemplate = template;
+          notifyListeners();
           return;
         }
       }
     }
     _selectedTemplate ??= _templates.isEmpty ? null : _templates.first;
+    notifyListeners();
   }
 
   Future<void> stop() async {
@@ -178,6 +186,39 @@ class PoseWorkflowController extends ChangeNotifier {
     _autoCaptureEnabled = enabled;
     _matchedSince = null;
     notifyListeners();
+  }
+
+  Future<void> renameTemplate(String templateId, String newName) async {
+    final repo = _analyzeLivePoseUseCase.poseRepository;
+    final template = await repo.getTemplateById(templateId);
+    if (template == null) {
+      return;
+    }
+    await repo.updateTemplate(
+      PoseTemplate(
+        templateId: template.templateId,
+        name: newName,
+        landmarks: template.landmarks,
+        outlinePoints: template.outlinePoints,
+        thumbnailPath: template.thumbnailPath,
+        sourceImagePath: template.sourceImagePath,
+        isFavorite: template.isFavorite,
+      ),
+    );
+    await refreshTemplates();
+  }
+
+  Future<void> deleteTemplate(String templateId) async {
+    await _analyzeLivePoseUseCase.poseRepository.deleteTemplate(templateId);
+    if (_selectedTemplate?.templateId == templateId) {
+      _selectedTemplate = null;
+    }
+    await refreshTemplates();
+  }
+
+  Future<void> toggleFavorite(String templateId) async {
+    await _analyzeLivePoseUseCase.poseRepository.toggleFavorite(templateId);
+    await refreshTemplates();
   }
 
   Future<void> buildTemplateFromUpload(String imagePath) async {

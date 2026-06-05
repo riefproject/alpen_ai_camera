@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:alpen_ai_camera/domain/entities/pose_template.dart';
 import 'package:alpen_ai_camera/presentation/controllers/pose_workflow_controller.dart';
+import 'package:alpen_ai_camera/presentation/screens/pose_manage_screen.dart';
 import 'package:alpen_ai_camera/presentation/screens/pose_preview_screen.dart';
 import 'package:alpen_ai_camera/presentation/screens/pose_viewer_screen.dart';
 import 'package:alpen_ai_camera/presentation/widgets/pose_ghost_overlay.dart';
@@ -32,20 +33,13 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
 
   Future<void> _loadTemplates() async {
     await widget.controller.refreshTemplates();
-    if (!mounted) {
-      return;
-    }
-
-    setState(() {
-      _isLoading = false;
-    });
+    if (!mounted) return;
+    setState(() => _isLoading = false);
   }
 
   Future<void> _uploadPose() async {
     final image = await _imagePicker.pickImage(source: ImageSource.gallery);
-    if (image == null) {
-      return;
-    }
+    if (image == null) return;
 
     setState(() {
       _isUploading = true;
@@ -53,9 +47,7 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
     });
 
     await widget.controller.buildTemplateFromUpload(image.path);
-    if (!mounted) {
-      return;
-    }
+    if (!mounted) return;
 
     setState(() {
       _isUploading = false;
@@ -80,11 +72,35 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
 
   Future<void> _usePose(PoseTemplate template) async {
     await widget.controller.selectTemplate(template);
-    if (!mounted) {
-      return;
-    }
-
+    if (!mounted) return;
     Navigator.of(context).pop();
+  }
+
+  Future<void> _managePose(PoseTemplate template) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (context) => PoseManageScreen(
+          template: template,
+          controller: widget.controller,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await _loadTemplates();
+  }
+
+  Future<void> _toggleFavorite(PoseTemplate template) async {
+    try {
+      await widget.controller.toggleFavorite(template.templateId);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Gagal mengubah favorit: $e'),
+          backgroundColor: Colors.red,
+        ),
+      );
+    }
   }
 
   @override
@@ -156,6 +172,9 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
                                   ),
                                 );
                               },
+                              onManage: () => _managePose(template),
+                              onToggleFavorite: () =>
+                                  _toggleFavorite(template),
                             );
                           },
                         ),
@@ -202,8 +221,7 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color:
-                    _uploadMessage != null &&
+                color: _uploadMessage != null &&
                         !_uploadMessage!.contains('berhasil') &&
                         !_uploadMessage!.contains('Memproses')
                     ? Colors.orangeAccent
@@ -237,17 +255,22 @@ class _PoseTemplateCard extends StatelessWidget {
     required this.isSelected,
     required this.onUse,
     this.onTapViewer,
+    required this.onManage,
+    required this.onToggleFavorite,
   });
 
   final PoseTemplate template;
   final bool isSelected;
   final VoidCallback onUse;
   final VoidCallback? onTapViewer;
+  final VoidCallback onManage;
+  final VoidCallback onToggleFavorite;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTapViewer ?? onUse,
+      onLongPress: onManage,
       child: Container(
         decoration: BoxDecoration(
           color: const Color(0xFF1B1B1B),
@@ -260,21 +283,48 @@ class _PoseTemplateCard extends StatelessWidget {
         child: Column(
           children: [
             Expanded(
-              child: Padding(
-                padding: const EdgeInsets.all(12),
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: Colors.black,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(10),
-                    child: _PoseTemplatePreviewSurface(
-                      template: template,
-                      isSelected: isSelected,
+              child: Stack(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(12),
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: Colors.black,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(10),
+                        child: _PoseTemplatePreviewSurface(
+                          template: template,
+                          isSelected: isSelected,
+                        ),
+                      ),
                     ),
                   ),
-                ),
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: GestureDetector(
+                      onTap: onToggleFavorite,
+                      child: Container(
+                        padding: const EdgeInsets.all(4),
+                        decoration: const BoxDecoration(
+                          color: Colors.black54,
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          template.isFavorite
+                              ? Icons.star
+                              : Icons.star_border,
+                          color: template.isFavorite
+                              ? const Color(0xFFFFD700)
+                              : Colors.white70,
+                          size: 18,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             ),
             Padding(

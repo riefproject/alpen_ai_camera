@@ -5,4 +5,7 @@ abstract class PoseRepository {
   Future<List<PoseTemplate>> getAvailableTemplates();
   Future<PoseTemplate?> getTemplateById(String templateId);
   Future<void> saveTemplate(PoseTemplate template);
+  Future<void> updateTemplate(PoseTemplate template);
+  Future<void> deleteTemplate(String templateId);
+  Future<void> toggleFavorite(String templateId);
 }

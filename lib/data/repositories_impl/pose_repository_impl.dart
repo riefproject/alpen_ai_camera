@@ -16,9 +16,27 @@ class PoseRepositoryImpl implements PoseRepository {
   @override
   Future<List<PoseTemplate>> getAvailableTemplates() async {
     final localTemplates = await _localDataSource.getAvailableTemplates();
+    final localMap = <String, PoseTemplateModel>{
+      for (final template in localTemplates) template.id: template,
+    };
+
     final templates = <PoseTemplate>[
-      ...DefaultPoseTemplates.all,
-      ...localTemplates.map((template) => template.toEntity()),
+      for (final def in DefaultPoseTemplates.all)
+        if (localMap.containsKey(def.templateId))
+          PoseTemplate(
+            templateId: def.templateId,
+            name: def.name,
+            landmarks: def.landmarks,
+            outlinePoints: def.outlinePoints,
+            thumbnailPath: def.thumbnailPath,
+            sourceImagePath: def.sourceImagePath,
+            isFavorite: localMap[def.templateId]!.isFavorite,
+          )
+        else
+          def,
+      ...localTemplates
+          .where((t) => !t.id.startsWith('default-'))
+          .map((template) => template.toEntity()),
     ];
     return templates;
   }
@@ -37,5 +55,50 @@ class PoseRepositoryImpl implements PoseRepository {
   @override
   Future<void> saveTemplate(PoseTemplate template) {
     return _localDataSource.saveTemplate(PoseTemplateModel.fromEntity(template));
+  }
+
+  @override
+  Future<void> updateTemplate(PoseTemplate template) async {
+    if (template.templateId.startsWith('default-')) {
+      throw UnsupportedError('Cannot update default templates');
+    }
+    await _localDataSource.updateTemplate(
+      PoseTemplateModel.fromEntity(template),
+    );
+  }
+
+  @override
+  Future<void> deleteTemplate(String templateId) async {
+    if (templateId.startsWith('default-')) {
+      throw UnsupportedError('Cannot delete default templates');
+    }
+    await _localDataSource.deleteTemplate(templateId);
+  }
+
+  @override
+  Future<void> toggleFavorite(String templateId) async {
+    if (templateId.startsWith('default-')) {
+      final existing = await _localDataSource.getTemplateById(templateId);
+      if (existing == null) {
+        final def = DefaultPoseTemplates.all
+            .firstWhere((t) => t.templateId == templateId);
+        final defModel = PoseTemplateModel.fromEntity(def);
+        await _localDataSource.saveTemplate(
+          PoseTemplateModel(
+            id: defModel.id,
+            name: defModel.name,
+            landmarks: defModel.landmarks,
+            outlinePoints: defModel.outlinePoints,
+            thumbnailPath: defModel.thumbnailPath,
+            sourceImagePath: defModel.sourceImagePath,
+            isFavorite: true,
+          ),
+        );
+      } else {
+        await _localDataSource.toggleFavorite(templateId);
+      }
+    } else {
+      await _localDataSource.toggleFavorite(templateId);
+    }
   }
 }

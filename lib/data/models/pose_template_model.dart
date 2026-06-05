@@ -12,9 +12,9 @@ class PoseTemplateModel {
     this.sourceImagePath,
     this.sourceImageWidth,
     this.sourceImageHeight,
+    this.isFavorite = false,
   });
 
-  // TODO: Adapt serialized or locally stored pose templates into the domain reference-pose structure.
   final String id;
   final String name;
   final List<PoseLandmarkModel> landmarks;
@@ -23,6 +23,7 @@ class PoseTemplateModel {
   final String? sourceImagePath;
   final int? sourceImageWidth;
   final int? sourceImageHeight;
+  final bool isFavorite;
 
   PoseTemplate toEntity() {
     return PoseTemplate(
@@ -34,6 +35,7 @@ class PoseTemplateModel {
       sourceImagePath: sourceImagePath,
       sourceImageWidth: sourceImageWidth,
       sourceImageHeight: sourceImageHeight,
+      isFavorite: isFavorite,
     );
   }
 
@@ -49,6 +51,7 @@ class PoseTemplateModel {
       sourceImagePath: template.sourceImagePath,
       sourceImageWidth: template.sourceImageWidth,
       sourceImageHeight: template.sourceImageHeight,
+      isFavorite: template.isFavorite,
     );
   }
 
@@ -80,6 +83,7 @@ class PoseTemplateModel {
       sourceImagePath: json['sourceImagePath'] as String?,
       sourceImageWidth: json['sourceImageWidth'] as int?,
       sourceImageHeight: json['sourceImageHeight'] as int?,
+      isFavorite: json['isFavorite'] as bool? ?? false,
     );
   }
 
@@ -100,6 +104,7 @@ class PoseTemplateModel {
       'sourceImagePath': sourceImagePath,
       'sourceImageWidth': sourceImageWidth,
       'sourceImageHeight': sourceImageHeight,
+      'isFavorite': isFavorite,
     };
   }
 }
