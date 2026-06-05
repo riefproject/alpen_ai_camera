@@ -83,8 +83,93 @@ class PoseGhostOverlayPainter extends CustomPainter {
   final bool showCandidateSkeleton;
   final Size? previewSize;
 
+  // Transform for body-aware ghost scaling
+  double _scaleX = 1.0;
+  double _scaleY = 1.0;
+  double _offsetX = 0.0;
+  double _offsetY = 0.0;
+
+  void _computeTransform(Size canvasSize) {
+    final bodyLandmarks = <PoseLandmark>[
+      for (final l in template.landmarks)
+        if (!_ignoredGhostLandmarks.contains(l.name)) l,
+    ];
+    if (bodyLandmarks.length < 4) {
+      return;
+    }
+
+    double minX = double.infinity, maxX = double.negativeInfinity;
+    double minY = double.infinity, maxY = double.negativeInfinity;
+    for (final l in bodyLandmarks) {
+      minX = math.min(minX, l.x);
+      maxX = math.max(maxX, l.x);
+      minY = math.min(minY, l.y);
+      maxY = math.max(maxY, l.y);
+    }
+    // If candidate landmarks available, use their bounding box for positioning
+    final candidateLandmarks = matchResult?.candidateLandmarks;
+    if (candidateLandmarks != null && candidateLandmarks.isNotEmpty) {
+      final candBody = <PoseLandmark>[
+        for (final l in candidateLandmarks)
+          if (!_ignoredGhostLandmarks.contains(l.name)) l,
+      ];
+      if (candBody.length >= 4) {
+        double cMinX = double.infinity, cMaxX = double.negativeInfinity;
+        double cMinY = double.infinity, cMaxY = double.negativeInfinity;
+        for (final l in candBody) {
+          cMinX = math.min(cMinX, l.x);
+          cMaxX = math.max(cMaxX, l.x);
+          cMinY = math.min(cMinY, l.y);
+          cMaxY = math.max(cMaxY, l.y);
+        }
+        final candW = cMaxX - cMinX;
+        final candH = cMaxY - cMinY;
+        final candCx = (cMinX + cMaxX) / 2;
+        final candCy = (cMinY + cMaxY) / 2;
+
+        final bodyW = maxX - minX;
+        final bodyH = maxY - minY;
+        if (bodyW > 0 && bodyH > 0) {
+          _scaleX = (candW / bodyW) * canvasSize.width;
+          _scaleY = (candH / bodyH) * canvasSize.height;
+          _offsetX = candCx * canvasSize.width - (minX + bodyW / 2) * _scaleX;
+          _offsetY = candCy * canvasSize.height - (minY + bodyH / 2) * _scaleY;
+          return;
+        }
+      }
+    }
+
+    // Default: scale template body to fill ~60% of canvas height
+    final bodyH = maxY - minY;
+    final bodyW = maxX - minX;
+    if (bodyH <= 0 || bodyW <= 0) return;
+
+    final targetHeight = canvasSize.height * 0.60;
+    final targetWidth = canvasSize.width * 0.50;
+    final scaleH = targetHeight / bodyH;
+    final scaleW = targetWidth / bodyW;
+    final uniformScale = math.min(scaleH, scaleW);
+
+    final scaledW = bodyW * uniformScale;
+    final scaledH = bodyH * uniformScale;
+
+    _scaleX = uniformScale * canvasSize.width;
+    _scaleY = uniformScale * canvasSize.height;
+    _offsetX = (canvasSize.width - scaledW) / 2 - minX * _scaleX;
+    _offsetY = (canvasSize.height - scaledH) / 2 - minY * _scaleY;
+  }
+
+  Offset _projectToCanvas(double nx, double ny) {
+    return Offset(
+      (nx * _scaleX + _offsetX).clamp(-10000.0, 10000.0),
+      (ny * _scaleY + _offsetY).clamp(-10000.0, 10000.0),
+    );
+  }
+
   @override
   void paint(Canvas canvas, Size size) {
+    _computeTransform(size);
+
     final points = template.outlinePoints.isNotEmpty
         ? template.outlinePoints
         : _outlineFromLandmarks(template.landmarks);
@@ -184,6 +269,7 @@ class PoseGhostOverlayPainter extends CustomPainter {
   }
 
   Path _buildSmoothPath(List<PoseOutlinePoint> points, Size size) {
+    if (points.isEmpty) return Path();
     final projected = points.map((point) => _project(point, size)).toList();
     final path = Path()..moveTo(projected.first.dx, projected.first.dy);
 
@@ -219,17 +305,11 @@ class PoseGhostOverlayPainter extends CustomPainter {
   }
 
   Offset _project(PoseOutlinePoint point, Size size) {
-    return Offset(
-      point.x.clamp(0.0, 1.0) * size.width,
-      point.y.clamp(0.0, 1.0) * size.height,
-    );
+    return _projectToCanvas(point.x, point.y);
   }
 
   Offset _projectLandmark(PoseLandmark landmark, Size size) {
-    return Offset(
-      landmark.x.clamp(0.0, 1.0) * size.width,
-      landmark.y.clamp(0.0, 1.0) * size.height,
-    );
+    return _projectToCanvas(landmark.x, landmark.y);
   }
 
   Color _overallColor() {
@@ -296,6 +376,12 @@ class PoseGhostOverlayPainter extends CustomPainter {
         oldDelegate.previewSize != previewSize;
   }
 }
+
+const Set<String> _ignoredGhostLandmarks = <String>{
+  'nose', 'leftEyeInner', 'leftEye', 'leftEyeOuter',
+  'rightEyeInner', 'rightEye', 'rightEyeOuter',
+  'leftEar', 'rightEar', 'leftMouth', 'rightMouth',
+};
 
 const Map<String, List<String>> _skeletonSegments = <String, List<String>>{
   'shoulders': <String>['leftShoulder', 'rightShoulder'],

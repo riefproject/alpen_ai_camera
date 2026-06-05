@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:alpen_ai_camera/domain/entities/pose_template.dart';
 import 'package:alpen_ai_camera/presentation/controllers/pose_workflow_controller.dart';
+import 'package:alpen_ai_camera/presentation/screens/pose_preview_screen.dart';
 import 'package:alpen_ai_camera/presentation/widgets/pose_ghost_overlay.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -20,7 +21,6 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
   bool _isLoading = true;
   bool _isUploading = false;
   String? _uploadMessage;
-  PoseTemplate? _lastUploadedTemplate;
 
   @override
   void initState() {
@@ -47,7 +47,7 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
 
     setState(() {
       _isUploading = true;
-      _uploadMessage = 'Memproses gambar menjadi pose...';
+      _uploadMessage = 'Memproses gambar...';
     });
 
     await widget.controller.buildTemplateFromUpload(image.path);
@@ -57,11 +57,22 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
 
     setState(() {
       _isUploading = false;
-      _uploadMessage =
-          widget.controller.errorMessage ?? 'Pose berhasil ditambahkan';
-      _lastUploadedTemplate = widget.controller.errorMessage == null
-          ? widget.controller.selectedTemplate
-          : null;
+      if (widget.controller.errorMessage != null) {
+        _uploadMessage = widget.controller.errorMessage;
+      } else {
+        _uploadMessage = 'Pose berhasil';
+        final template = widget.controller.selectedTemplate;
+        if (template != null) {
+          Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (context) => PosePreviewScreen(
+                template: template,
+                controller: widget.controller,
+              ),
+            ),
+          );
+        }
+      }
     });
   }
 
@@ -115,13 +126,6 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
                         padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
                         child: _buildUploadCard(),
                       ),
-                      if (_lastUploadedTemplate?.sourceImagePath != null)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-                          child: _UploadedPosePreview(
-                            template: _lastUploadedTemplate!,
-                          ),
-                        ),
                       Expanded(
                         child: GridView.builder(
                           padding: const EdgeInsets.fromLTRB(16, 0, 16, 24),
@@ -291,65 +295,14 @@ class _PoseTemplateCard extends StatelessWidget {
   }
 }
 
-class _UploadedPosePreview extends StatelessWidget {
-  const _UploadedPosePreview({required this.template});
-
-  final PoseTemplate template;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 220,
-      decoration: BoxDecoration(
-        color: const Color(0xFF1B1B1B),
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: Colors.lightGreenAccent.withValues(alpha: 0.6),
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(12, 10, 12, 8),
-            child: Text(
-              'Preview ekstraksi pose',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 13,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(6),
-                child: _PoseTemplatePreviewSurface(
-                  template: template,
-                  isSelected: true,
-                  fit: BoxFit.fill,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 class _PoseTemplatePreviewSurface extends StatelessWidget {
   const _PoseTemplatePreviewSurface({
     required this.template,
     required this.isSelected,
-    this.fit = BoxFit.fill,
   });
 
   final PoseTemplate template;
   final bool isSelected;
-  final BoxFit fit;
 
   @override
   Widget build(BuildContext context) {
@@ -362,7 +315,7 @@ class _PoseTemplatePreviewSurface extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         if (hasImage)
-          Image.file(imageFile, fit: fit, alignment: Alignment.center)
+          Image.file(imageFile, fit: BoxFit.fill, alignment: Alignment.center)
         else
           const DecoratedBox(decoration: BoxDecoration(color: Colors.black)),
         Container(color: Colors.black.withValues(alpha: hasImage ? 0.18 : 0)),

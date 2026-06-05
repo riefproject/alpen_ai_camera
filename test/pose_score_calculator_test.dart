@@ -30,14 +30,14 @@ void main() {
     expect(result.segmentScores['leftLowerArm'], greaterThanOrEqualTo(0.95));
   });
 
-  test('is resilient to simple scale and translation differences', () {
+  test('penalizes position mismatch even with correct pose', () {
     final reference = _bodyLandmarks();
     final candidate = reference
         .map(
           (landmark) => PoseLandmark(
             name: landmark.name,
-            x: (landmark.x * 1.4) + 0.1,
-            y: (landmark.y * 1.4) + 0.05,
+            x: landmark.x + 0.15,
+            y: landmark.y + 0.10,
             visibility: landmark.visibility,
           ),
         )
@@ -58,7 +58,9 @@ void main() {
       ),
     );
 
-    expect(result.score, greaterThan(0.85));
+    // Pose is correct but wrong position should reduce score
+    expect(result.score, lessThan(0.85));
+    expect(result.feedbackMessage, isNot('Pose cocok'));
   });
 
   test('accepts horizontally mirrored candidates for front camera', () {
@@ -101,7 +103,7 @@ void main() {
     );
   });
 
-  test('scores a misaligned limb lower than matching segments', () {
+  test('scores a misaligned limb sharply lower', () {
     final reference = _bodyLandmarks();
     final candidate = reference
         .map(
@@ -133,7 +135,7 @@ void main() {
 
     expect(result.isMatched, isFalse);
     expect(result.misalignedLandmarks, contains('rightWrist'));
-    expect(result.segmentScores['rightLowerArm'], lessThan(0.68));
+    expect(result.segmentScores['rightLowerArm'], lessThan(0.60));
     expect(result.segmentScores['leftLowerArm'], greaterThan(0.9));
   });
 

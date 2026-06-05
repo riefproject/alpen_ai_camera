@@ -1019,15 +1019,11 @@ class _CameraHomeScreenState extends State<CameraHomeScreen> {
     if (!_poseController.isActive || template == null) {
       return null;
     }
-    
-    final previewSize = _previewController?.value.previewSize;
-    final size = previewSize != null ? Size(previewSize.height, previewSize.width) : null;
 
     return PoseGhostOverlay(
       template: template,
       matchResult: _poseController.lastMatchResult,
       showCandidateSkeleton: _showDetectedPoseSkeleton,
-      previewSize: size,
     );
   }
 
