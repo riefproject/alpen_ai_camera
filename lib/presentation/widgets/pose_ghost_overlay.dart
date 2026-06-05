@@ -139,24 +139,46 @@ class PoseGhostOverlayPainter extends CustomPainter {
       }
     }
 
-    // Default: scale template body to fill ~60% of canvas height
+    // If source image dimensions available (from template or previewSize),
+    // compute BoxFit.contain display rect for exact overlay alignment
+    double? imgW;
+    double? imgH;
+    if (template.sourceImageWidth != null && template.sourceImageHeight != null) {
+      imgW = template.sourceImageWidth!.toDouble();
+      imgH = template.sourceImageHeight!.toDouble();
+    } else if (previewSize != null && previewSize!.width > 0 && previewSize!.height > 0) {
+      imgW = previewSize!.width;
+      imgH = previewSize!.height;
+    }
+    if (imgW != null && imgH != null) {
+      final scale = math.min(canvasSize.width / imgW, canvasSize.height / imgH);
+      final dispW = imgW * scale;
+      final dispH = imgH * scale;
+      final offX = (canvasSize.width - dispW) / 2;
+      final offY = (canvasSize.height - dispH) / 2;
+
+      _scaleX = dispW;
+      _scaleY = dispH;
+      _offsetX = offX;
+      _offsetY = offY;
+      return;
+    }
+
+    // Default: scale template body (templates without source image)
     final bodyH = maxY - minY;
     final bodyW = maxX - minX;
     if (bodyH <= 0 || bodyW <= 0) return;
 
-    final targetHeight = canvasSize.height * 0.60;
-    final targetWidth = canvasSize.width * 0.50;
+    final targetHeight = canvasSize.height * 0.90;
+    final targetWidth = canvasSize.width * 0.75;
     final scaleH = targetHeight / bodyH;
     final scaleW = targetWidth / bodyW;
     final uniformScale = math.min(scaleH, scaleW);
 
-    final scaledW = bodyW * uniformScale;
-    final scaledH = bodyH * uniformScale;
-
-    _scaleX = uniformScale * canvasSize.width;
-    _scaleY = uniformScale * canvasSize.height;
-    _offsetX = (canvasSize.width - scaledW) / 2 - minX * _scaleX;
-    _offsetY = (canvasSize.height - scaledH) / 2 - minY * _scaleY;
+    _scaleX = uniformScale;
+    _scaleY = uniformScale;
+    _offsetX = (canvasSize.width - bodyW * _scaleX) / 2 - minX * _scaleX;
+    _offsetY = (canvasSize.height - bodyH * _scaleY) / 2 - minY * _scaleY;
   }
 
   Offset _projectToCanvas(double nx, double ny) {

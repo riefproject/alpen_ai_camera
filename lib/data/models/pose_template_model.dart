@@ -10,6 +10,8 @@ class PoseTemplateModel {
     this.outlinePoints = const <PoseOutlinePoint>[],
     this.thumbnailPath,
     this.sourceImagePath,
+    this.sourceImageWidth,
+    this.sourceImageHeight,
   });
 
   // TODO: Adapt serialized or locally stored pose templates into the domain reference-pose structure.
@@ -19,6 +21,8 @@ class PoseTemplateModel {
   final List<PoseOutlinePoint> outlinePoints;
   final String? thumbnailPath;
   final String? sourceImagePath;
+  final int? sourceImageWidth;
+  final int? sourceImageHeight;
 
   PoseTemplate toEntity() {
     return PoseTemplate(
@@ -28,6 +32,8 @@ class PoseTemplateModel {
       outlinePoints: outlinePoints,
       thumbnailPath: thumbnailPath,
       sourceImagePath: sourceImagePath,
+      sourceImageWidth: sourceImageWidth,
+      sourceImageHeight: sourceImageHeight,
     );
   }
 
@@ -41,6 +47,8 @@ class PoseTemplateModel {
       outlinePoints: template.outlinePoints,
       thumbnailPath: template.thumbnailPath,
       sourceImagePath: template.sourceImagePath,
+      sourceImageWidth: template.sourceImageWidth,
+      sourceImageHeight: template.sourceImageHeight,
     );
   }
 
@@ -70,6 +78,8 @@ class PoseTemplateModel {
           .toList(),
       thumbnailPath: json['thumbnailPath'] as String?,
       sourceImagePath: json['sourceImagePath'] as String?,
+      sourceImageWidth: json['sourceImageWidth'] as int?,
+      sourceImageHeight: json['sourceImageHeight'] as int?,
     );
   }
 
@@ -88,6 +98,8 @@ class PoseTemplateModel {
           .toList(),
       'thumbnailPath': thumbnailPath,
       'sourceImagePath': sourceImagePath,
+      'sourceImageWidth': sourceImageWidth,
+      'sourceImageHeight': sourceImageHeight,
     };
   }
 }

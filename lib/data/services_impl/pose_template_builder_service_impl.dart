@@ -41,6 +41,8 @@ class PoseTemplateBuilderServiceImpl implements PoseTemplateBuilderService {
       landmarks: frame.landmarks,
       outlinePoints: outlinePoints,
       sourceImagePath: imagePath,
+      sourceImageWidth: frame.width,
+      sourceImageHeight: frame.height,
     );
   }
 

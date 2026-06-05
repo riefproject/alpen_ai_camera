@@ -9,6 +9,8 @@ class PoseTemplate {
     this.outlinePoints = const <PoseOutlinePoint>[],
     this.thumbnailPath,
     this.sourceImagePath,
+    this.sourceImageWidth,
+    this.sourceImageHeight,
   });
 
   // TODO: Store the reusable reference pose used for overlay guidance and similarity checks.
@@ -18,4 +20,6 @@ class PoseTemplate {
   final List<PoseOutlinePoint> outlinePoints;
   final String? thumbnailPath;
   final String? sourceImagePath;
+  final int? sourceImageWidth;
+  final int? sourceImageHeight;
 }

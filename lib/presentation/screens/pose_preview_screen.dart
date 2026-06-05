@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:alpen_ai_camera/domain/entities/pose_template.dart';
 import 'package:alpen_ai_camera/presentation/controllers/pose_workflow_controller.dart';
@@ -23,6 +24,40 @@ class PosePreviewScreen extends StatefulWidget {
 class _PosePreviewScreenState extends State<PosePreviewScreen> {
   bool _isScanning = true;
   bool _showContent = false;
+  Size? _imageSize;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadImageSize();
+  }
+
+  Future<void> _loadImageSize() async {
+    final path = widget.template.sourceImagePath;
+    if (path == null) return;
+    if (widget.template.sourceImageWidth != null &&
+        widget.template.sourceImageHeight != null) {
+      return;
+    }
+    final file = File(path);
+    if (!file.existsSync()) return;
+    try {
+      final bytes = await file.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+      if (!mounted) {
+        image.dispose();
+        codec.dispose();
+        return;
+      }
+      setState(() {
+        _imageSize = Size(image.width.toDouble(), image.height.toDouble());
+      });
+      image.dispose();
+      codec.dispose();
+    } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -52,12 +87,10 @@ class _PosePreviewScreenState extends State<PosePreviewScreen> {
                         Container(
                           color: Colors.black.withValues(alpha: hasImage ? 0.35 : 0),
                         ),
-                        Padding(
-                          padding: const EdgeInsets.all(8),
-                          child: PoseOutlinePreview(
-                            template: template,
-                            color: Colors.lightGreenAccent,
-                          ),
+                        PoseOutlinePreview(
+                          template: template,
+                          color: Colors.lightGreenAccent,
+                          previewSize: _imageSize,
                         ),
                         Positioned(
                           top: 16,

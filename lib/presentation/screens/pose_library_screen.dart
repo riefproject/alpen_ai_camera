@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:alpen_ai_camera/domain/entities/pose_template.dart';
 import 'package:alpen_ai_camera/presentation/controllers/pose_workflow_controller.dart';
 import 'package:alpen_ai_camera/presentation/screens/pose_preview_screen.dart';
+import 'package:alpen_ai_camera/presentation/screens/pose_viewer_screen.dart';
 import 'package:alpen_ai_camera/presentation/widgets/pose_ghost_overlay.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -144,6 +146,16 @@ class _PoseLibraryScreenState extends State<PoseLibraryScreen> {
                               isSelected:
                                   selected?.templateId == template.templateId,
                               onUse: () => _usePose(template),
+                              onTapViewer: () {
+                                Navigator.of(context).push(
+                                  MaterialPageRoute<void>(
+                                    builder: (context) => PoseViewerScreen(
+                                      template: template,
+                                      controller: widget.controller,
+                                    ),
+                                  ),
+                                );
+                              },
                             );
                           },
                         ),
@@ -224,16 +236,18 @@ class _PoseTemplateCard extends StatelessWidget {
     required this.template,
     required this.isSelected,
     required this.onUse,
+    this.onTapViewer,
   });
 
   final PoseTemplate template;
   final bool isSelected;
   final VoidCallback onUse;
+  final VoidCallback? onTapViewer;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: onUse,
+      onTap: onTapViewer ?? onUse,
       child: Container(
         decoration: BoxDecoration(
           color: const Color(0xFF1B1B1B),
@@ -295,7 +309,7 @@ class _PoseTemplateCard extends StatelessWidget {
   }
 }
 
-class _PoseTemplatePreviewSurface extends StatelessWidget {
+class _PoseTemplatePreviewSurface extends StatefulWidget {
   const _PoseTemplatePreviewSurface({
     required this.template,
     required this.isSelected,
@@ -305,11 +319,55 @@ class _PoseTemplatePreviewSurface extends StatelessWidget {
   final bool isSelected;
 
   @override
+  State<_PoseTemplatePreviewSurface> createState() =>
+      _PoseTemplatePreviewSurfaceState();
+}
+
+class _PoseTemplatePreviewSurfaceState
+    extends State<_PoseTemplatePreviewSurface> {
+  Size? _imageSize;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadImageSize();
+  }
+
+  Future<void> _loadImageSize() async {
+    final path = widget.template.sourceImagePath;
+    if (path == null) return;
+    if (widget.template.sourceImageWidth != null &&
+        widget.template.sourceImageHeight != null) {
+      return;
+    }
+    final file = File(path);
+    if (!file.existsSync()) return;
+    try {
+      final bytes = await file.readAsBytes();
+      final codec = await ui.instantiateImageCodec(bytes);
+      final frame = await codec.getNextFrame();
+      final image = frame.image;
+      if (!mounted) {
+        image.dispose();
+        codec.dispose();
+        return;
+      }
+      setState(() {
+        _imageSize = Size(image.width.toDouble(), image.height.toDouble());
+      });
+      image.dispose();
+      codec.dispose();
+    } catch (_) {}
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final sourceImagePath = template.sourceImagePath;
+    final sourceImagePath = widget.template.sourceImagePath;
     final imageFile = sourceImagePath == null ? null : File(sourceImagePath);
     final hasImage = imageFile != null && imageFile.existsSync();
-    final overlayColor = isSelected ? Colors.lightGreenAccent : Colors.white;
+    final overlayColor = widget.isSelected
+        ? Colors.lightGreenAccent
+        : Colors.white;
 
     return Stack(
       fit: StackFit.expand,
@@ -321,7 +379,11 @@ class _PoseTemplatePreviewSurface extends StatelessWidget {
         Container(color: Colors.black.withValues(alpha: hasImage ? 0.18 : 0)),
         Padding(
           padding: EdgeInsets.all(hasImage ? 0 : 4),
-          child: PoseOutlinePreview(template: template, color: overlayColor),
+          child: PoseOutlinePreview(
+            template: widget.template,
+            color: overlayColor,
+            previewSize: _imageSize,
+          ),
         ),
       ],
     );
